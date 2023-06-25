@@ -7,9 +7,9 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
     public typealias LockID = UInt64
     
     public enum LockError: Error {
-        case notAcquired(lock: AsyncAwaitLock)
-        case acquiredElsewhere(lock: AsyncAwaitLock, (file: String, line: Int)? = nil)
-        case replaced(lock: AsyncAwaitLock, (file: String, line: Int)? = nil)
+        case notAcquired(lock: AsyncAwaitLockMainActor)
+        case acquiredElsewhere(lock: AsyncAwaitLockMainActor, (file: String, line: Int)? = nil)
+        case replaced(lock: AsyncAwaitLockMainActor, (file: String, line: Int)? = nil)
     }
     
     public nonisolated let name: String

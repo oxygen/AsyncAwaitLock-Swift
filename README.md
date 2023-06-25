@@ -1,2 +1,3 @@
-# AsyncAwaitLock-Swift
-General purpose non-thread-blocking async/await-based locking
+# AsyncAwaitLock
+
+Experimental, use at your own risk, usage in tests.

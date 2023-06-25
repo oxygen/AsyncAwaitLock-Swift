@@ -25,12 +25,9 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     private var lockID: LockID = 0
     
     private var preventNewAcquires: Bool = false
-    private var continuationsFIFO: [CheckedContinuation<Void, Never>] = []
-    private var continuationLockIDs: [LockID] = []
-    private var replacedContinuationsLockIDs: Set<LockID> = []
-    private var failedContinuationsLockIDs: Set<LockID> = []
+    private var continuationsFIFO: [CheckedContinuation<Void, any Error>] = []
+    private var continuationLockIDsFIFO: [LockID] = []
     private var prematureReleaseLockIDs: Set<LockID> = []
-    private var lastReplacingContinuationLockID: LockID? = nil
     private var debugLockIDToFileAndLine: Dictionary<LockID, (file: String, line: Int)> = [:]
     
     // From Apple’s docs: The checked continuation offers detection of mis-use,
@@ -86,7 +83,12 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     }
     
     
-    public func acquire(replaceWaiting: Bool = false, file: String? = nil, line: Int? = nil) async throws -> LockID {
+    public func acquire(
+        timeout: TimeInterval? = nil,
+        replaceWaiting: Bool = false,
+        file: String? = nil,
+        line: Int? = nil
+    ) async throws -> LockID {
         if disposed {
             fatalError("Attempted to lock disposed() lock named \(name)")
         }
@@ -103,60 +105,31 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         }
         else {
             if replaceWaiting {
-                let continuations = self.continuationsFIFO
-                self.continuationsFIFO.removeAll(keepingCapacity: true)
+                let continuations = continuationsFIFO
+                continuationsFIFO.removeAll(keepingCapacity: true)
+                continuationLockIDsFIFO.removeAll(keepingCapacity: true)
                 
-                replacedContinuationsLockIDs.reserveCapacity((replacedContinuationsLockIDs.count + continuationLockIDs.count) * 2)
-                for replacedLockID in continuationLockIDs {
-                    replacedContinuationsLockIDs.insert(replacedLockID)
-                }
-                continuationLockIDs.removeAll(keepingCapacity: true)
-                
-                lastReplacingContinuationLockID = lockID
-                
-                // All of these will now throw .replaced
                 for continuation in continuations {
-                    continuation.resume()
+                    continuation.resume(throwing: LockError.replaced(lock: self, debugLockIDToFileAndLine[lockID]))
                 }
             }
             
-            await withCheckedContinuation { continuation in
-                self.continuationLockIDs.append(lockID)
+            try await withCheckedThrowingContinuation { [self] continuation in
+                self.continuationLockIDsFIFO.append(lockID)
                 self.continuationsFIFO.append(continuation)
-            }
-            
-            if replacedContinuationsLockIDs.contains(lockID) {
-                replacedContinuationsLockIDs.remove(lockID)
                 
-                // Like .release()
-                if isAcquired == false && self.continuationsFIFO.count > 0 {
-                    let continuation = self.continuationsFIFO.removeFirst()
-                    let lockIDRemoved = self.continuationLockIDs.removeFirst()
-                    debugLockIDToFileAndLine.removeValue(forKey: lockIDRemoved)
-                    
-                    continuation.resume()
+                if timeout != nil {
+                    Task { [self] in
+                        try! await Task.sleep(nanoseconds: UInt64(1_000_000_000 * timeout!))
+                        
+                        let index = self.continuationLockIDsFIFO.firstIndex(of: lockID)
+                        if index != nil {
+                            self.continuationLockIDsFIFO.remove(at: index!)
+                            self.continuationsFIFO.remove(at: index!)
+                            continuation.resume(throwing: LockError.notAcquired(lock: self))
+                        }
+                    }
                 }
-                
-                throw LockError.replaced(lock: self, debugLockIDToFileAndLine[self.lastReplacingContinuationLockID!])
-            }
-            
-            else if failedContinuationsLockIDs.contains(lockID) {
-                failedContinuationsLockIDs.remove(lockID)
-                
-                if failAllLockID != nil && failedContinuationsLockIDs.isEmpty {
-                    try! await failAllWaitLock!.release(acquiredLockID: failAllLockID!, ignoreRepeatRelease: true)
-                }
-                
-                // Like .release()
-                if isAcquired == false && self.continuationsFIFO.count > 0 {
-                    let continuation = self.continuationsFIFO.removeFirst()
-                    let lockIDRemoved = self.continuationLockIDs.removeFirst()
-                    debugLockIDToFileAndLine.removeValue(forKey: lockIDRemoved)
-                    
-                    continuation.resume()
-                }
-                
-                throw LockError.notAcquired(lock: self)
             }
             
             acquiredLockID = lockID
@@ -177,10 +150,6 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         
         if prematureReleaseLockIDs.contains(acquiredLockID) {
             prematureReleaseLockIDs.remove(acquiredLockID)
-            
-            if failAllLockID != nil && failedContinuationsLockIDs.isEmpty {
-                try! await failAllWaitLock!.release(acquiredLockID: failAllLockID!, ignoreRepeatRelease: true)
-            }
             
             return
         }
@@ -214,7 +183,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         
         if self.continuationsFIFO.count > 0 {
             let continuation = self.continuationsFIFO.removeFirst()
-            let lockIDRemoved = self.continuationLockIDs.removeFirst()
+            let lockIDRemoved = self.continuationLockIDsFIFO.removeFirst()
             debugLockIDToFileAndLine.removeValue(forKey: lockIDRemoved)
             
             continuation.resume()
@@ -274,32 +243,14 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     }
     
     
-    private var failAllWaitLock: AsyncAwaitLock? = nil
-    private var failAllLockID: LockID? = nil
     public func failAll() async throws {
-        let failAllLockName = "__failAllWaitLock__"
-        if name == failAllLockName {
-            fatalError("\(failAllLockName) is a reserved name.")
-        }
+        let continuations = continuationsFIFO
+        continuationsFIFO.removeAll(keepingCapacity: true)
+        continuationLockIDsFIFO.removeAll(keepingCapacity: true)
+        debugLockIDToFileAndLine.removeAll(keepingCapacity: true)
         
-        if failAllWaitLock == nil {
-            failAllWaitLock = AsyncAwaitLock(name: failAllLockName)
-        }
-        let failAllWaitLock = failAllWaitLock!
-        failAllLockID = try await failAllWaitLock.acquireNonWaiting()
-        
-        let continuations = self.continuationsFIFO
-        self.continuationsFIFO.removeAll(keepingCapacity: true)
-        
-        failedContinuationsLockIDs.reserveCapacity((failedContinuationsLockIDs.count + continuationLockIDs.count) * 2)
-        for replacedLockID in continuationLockIDs {
-            failedContinuationsLockIDs.insert(replacedLockID)
-        }
-        continuationLockIDs.removeAll(keepingCapacity: true)
-        
-        // All of these will now throw .notAcquired
         for continuation in continuations {
-            continuation.resume()
+            continuation.resume(throwing: LockError.notAcquired(lock: self))
         }
         
         // .release() for the acquired lock will be reached and will not throw.
@@ -308,30 +259,10 @@ public actor AsyncAwaitLock: CustomStringConvertible {
             acquiredLockID = nil
         }
 
-        
-        if failedContinuationsLockIDs.count > 0 {
-            let failAllLockIDWait = try! await failAllWaitLock.acquire()
-            failAllLockID = nil
-            
-            // This shouldn't still hold stuff but it does (maybe from the acquired lock
-            // which we don't await for since it could take forever or deadlock).
-            debugLockIDToFileAndLine.removeAll(keepingCapacity: true)
-            
-            try! await failAllWaitLock.release(acquiredLockID: failAllLockIDWait)
-        }
-        else {
-            let failAllLockIDCopy = failAllLockID!
-            failAllLockID = nil
-            
-            // This shouldn't still hold stuff but it does (maybe from the acquired lock
-            // which we don't await for since it could take forever or deadlock).
-            debugLockIDToFileAndLine.removeAll(keepingCapacity: true)
-            
-            try! await failAllWaitLock.release(acquiredLockID: failAllLockIDCopy)
-        }
-        
         if waitAllLockID != nil {
-            try! await waitAllWaitLock!.release(acquiredLockID: waitAllLockID!, ignoreRepeatRelease: true)
+            let waitAllLockIDCopy = waitAllLockID!
+            waitAllLockID = nil
+            try! await waitAllWaitLock!.release(acquiredLockID: waitAllLockIDCopy, ignoreRepeatRelease: true)
         }
     }
     
@@ -342,9 +273,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         }
         
         assert(continuationsFIFO.isEmpty)
-        assert(continuationLockIDs.isEmpty)
-        assert(replacedContinuationsLockIDs.isEmpty)
-        assert(failedContinuationsLockIDs.isEmpty)
+        assert(continuationLockIDsFIFO.isEmpty)
         assert(debugLockIDToFileAndLine.isEmpty)
     }
 }

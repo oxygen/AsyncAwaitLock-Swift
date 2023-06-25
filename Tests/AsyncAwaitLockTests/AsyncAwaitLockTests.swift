@@ -18,7 +18,7 @@ final class AsyncAwaitLockTests: XCTestCase {
                 print("Acquired lock O")
             }
             catch {
-                switch error as? AsyncAwaitLock.LockError {
+                switch error as! AsyncAwaitLock.LockError {
                 case .replaced:
                     print("Lock O was replaced, exiting Task.")
                     return
@@ -40,7 +40,7 @@ final class AsyncAwaitLockTests: XCTestCase {
                 print("Acquired lock A")
             }
             catch {
-                switch error as? AsyncAwaitLock.LockError {
+                switch error as! AsyncAwaitLock.LockError {
                 case .replaced:
                     print("Lock A was replaced, exiting Task.")
                     return
@@ -63,7 +63,7 @@ final class AsyncAwaitLockTests: XCTestCase {
                 print("Acquired lock B")
             }
             catch {
-                switch error as? AsyncAwaitLock.LockError {
+                switch error as! AsyncAwaitLock.LockError {
                 case .replaced:
                     print("Lock B was replaced, exiting Task.")
                     return
@@ -86,7 +86,7 @@ final class AsyncAwaitLockTests: XCTestCase {
                 print("Acquired lock C")
             }
             catch {
-                switch error as? AsyncAwaitLock.LockError {
+                switch error as! AsyncAwaitLock.LockError {
                 case .replaced:
                     print("Lock C was replaced, exiting Task.")
                     return
@@ -98,6 +98,25 @@ final class AsyncAwaitLockTests: XCTestCase {
             
             print("Releasing blocking lock C")
             try! await lock.release(acquiredLockID: lockID)
+        }
+        Task {
+            try! await Task.sleep(nanoseconds: 700_000_000)
+            print("Acquiring blocking lock T with timeout")
+            
+            do {
+                let _ = try await lock.acquire(timeout: 0.01, file: #filePath, line: #line)
+                assert(false)
+            }
+            catch {
+                switch error as! AsyncAwaitLock.LockError {
+                case .notAcquired:
+                    print("Lock T timed out as expected.")
+                    return
+                default:
+                    print("ERROR: Lock T dind't time out as expected.")
+                    throw error
+                }
+            }
         }
         Task {
             // Wait for acquire in the previous tasks.
@@ -132,11 +151,13 @@ final class AsyncAwaitLockTests: XCTestCase {
                 print("Acquired lock O")
             }
             catch {
-                switch error as? AsyncAwaitLock.LockError {
+                switch error as! AsyncAwaitLock.LockError {
                 case .replaced:
                     print("Lock O was replaced, exiting Task.")
                     return
-                default: throw error
+                default:
+                    print("Lock O threw error:", error)
+                    throw error
                 }
             }
             
@@ -154,11 +175,13 @@ final class AsyncAwaitLockTests: XCTestCase {
                 print("Acquired lock A")
             }
             catch {
-                switch error as? AsyncAwaitLock.LockError {
+                switch error as! AsyncAwaitLock.LockError {
                 case .replaced:
                     print("Lock A was replaced, exiting Task.")
                     return
-                default: throw error
+                default:
+                    print("Lock A threw error:", error)
+                    throw error
                 }
             }
             
@@ -168,6 +191,7 @@ final class AsyncAwaitLockTests: XCTestCase {
             try! await lock.release(acquiredLockID: lockID)
         }
         try! await Task.sleep(nanoseconds: 500_000_000)
+        print("Failling all waiting locks.")
         try! await lock.failAll()
         try! await lock.checkReleased()
         

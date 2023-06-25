@@ -8,6 +8,7 @@ public actor AsyncAwaitLock {
     public enum LockError: Error {
         case notAcquired
         case acquiredElsewhere((file: String, line: Int)? = nil)
+        case replaced((file: String, line: Int)? = nil)
     }
     
     public var name: String
@@ -21,6 +22,9 @@ public actor AsyncAwaitLock {
     private var lockID: LockID = 0
      
     private var continuationsFIFO: [CheckedContinuation<Void, Never>] = []
+    private var continuationLockIDs: [LockID] = []
+    private var replacedContinuationsLockIDs: Set<LockID> = []
+    private var lastReplacingContinuationLockID: LockID? = nil
     private var debugLockIDToFileAndLine: Dictionary<LockID, (file: String, line: Int)> = [:]
     
     // From Apple’s docs: The checked continuation offers detection of mis-use,
@@ -72,11 +76,11 @@ public actor AsyncAwaitLock {
             throw LockError.acquiredElsewhere(debugLockIDToFileAndLine[acquiredLockID!])
         }
         
-        return await acquire(file: file, line: line)
+        return try await acquire(file: file, line: line)
     }
     
     
-    public func acquire(file: String? = nil, line: Int? = nil) async -> LockID {
+    public func acquire(replaceWaiting: Bool = false, file: String? = nil, line: Int? = nil) async throws -> LockID {
         if disposed {
             fatalError("Attempted to lock disposed() lock named \(name)")
         }
@@ -88,8 +92,43 @@ public actor AsyncAwaitLock {
             acquiredLockID = lockID
         }
         else {
+            if replaceWaiting {
+                let continuations = self.continuationsFIFO
+                self.continuationsFIFO.removeAll(keepingCapacity: true)
+                
+                replacedContinuationsLockIDs.reserveCapacity((replacedContinuationsLockIDs.count + continuationLockIDs.count) * 2)
+                for replacedLockID in continuationLockIDs {
+                    replacedContinuationsLockIDs.insert(replacedLockID)
+                }
+                continuationLockIDs.removeAll(keepingCapacity: true)
+                
+                lastReplacingContinuationLockID = lockID
+                
+                // All of these will now throw .replaced
+                for continuation in continuations {
+                    continuation.resume()
+                }
+            }
+            
             await withCheckedContinuation { continuation in
+                self.continuationLockIDs.append(lockID)
                 self.continuationsFIFO.append(continuation)
+            }
+            
+            if replacedContinuationsLockIDs.contains(lockID) {
+                replacedContinuationsLockIDs.remove(lockID)
+                
+                // Like .release()
+                if isAcquired == false && self.continuationsFIFO.count > 0 {
+                    let continuation = self.continuationsFIFO.first!
+                    
+                    self.continuationsFIFO.removeFirst(1)
+                    self.continuationLockIDs.removeFirst(1)
+                    
+                    continuation.resume()
+                }
+                
+                throw LockError.replaced(debugLockIDToFileAndLine[self.lastReplacingContinuationLockID!])
             }
             
             acquiredLockID = lockID
@@ -120,7 +159,10 @@ public actor AsyncAwaitLock {
         
         if self.continuationsFIFO.count > 0 {
             let continuation = self.continuationsFIFO.first!
-            self.continuationsFIFO.removeFirst()
+            
+            self.continuationsFIFO.removeFirst(1)
+            self.continuationLockIDs.removeFirst(1)
+            
             continuation.resume()
         }
         else {
@@ -153,6 +195,7 @@ public class AsyncAwaitLockMainActor {
     public enum LockError: Error {
         case notAcquired
         case acquiredElsewhere((file: String, line: Int)? = nil)
+        case replaced((file: String, line: Int)? = nil)
     }
     
     public var name: String
@@ -166,6 +209,9 @@ public class AsyncAwaitLockMainActor {
     private var lockID: LockID = 0
      
     private var continuationsFIFO: [CheckedContinuation<Void, Never>] = []
+    private var continuationLockIDs: [LockID] = []
+    private var replacedContinuationsLockIDs: Set<LockID> = []
+    private var lastReplacingContinuationLockID: LockID? = nil
     private var debugLockIDToFileAndLine: Dictionary<LockID, (file: String, line: Int)> = [:]
     
     // From Apple’s docs: The checked continuation offers detection of mis-use,
@@ -217,11 +263,11 @@ public class AsyncAwaitLockMainActor {
             throw LockError.acquiredElsewhere(debugLockIDToFileAndLine[acquiredLockID!])
         }
         
-        return await acquire(file: file, line: line)
+        return try await acquire(file: file, line: line)
     }
     
     
-    public func acquire(file: String? = nil, line: Int? = nil) async -> LockID {
+    public func acquire(replaceWaiting: Bool = false, file: String? = nil, line: Int? = nil) async throws -> LockID {
         if disposed {
             fatalError("Attempted to lock disposed() lock named \(name)")
         }
@@ -233,8 +279,43 @@ public class AsyncAwaitLockMainActor {
             acquiredLockID = lockID
         }
         else {
+            if replaceWaiting {
+                let continuations = self.continuationsFIFO
+                self.continuationsFIFO.removeAll(keepingCapacity: true)
+                
+                replacedContinuationsLockIDs.reserveCapacity((replacedContinuationsLockIDs.count + continuationLockIDs.count) * 2)
+                for replacedLockID in continuationLockIDs {
+                    replacedContinuationsLockIDs.insert(replacedLockID)
+                }
+                continuationLockIDs.removeAll(keepingCapacity: true)
+                
+                lastReplacingContinuationLockID = lockID
+                
+                // All of these will now throw .replaced
+                for continuation in continuations {
+                    continuation.resume()
+                }
+            }
+            
             await withCheckedContinuation { continuation in
+                self.continuationLockIDs.append(lockID)
                 self.continuationsFIFO.append(continuation)
+            }
+            
+            if replacedContinuationsLockIDs.contains(lockID) {
+                replacedContinuationsLockIDs.remove(lockID)
+                
+                // Like .release()
+                if isAcquired == false && self.continuationsFIFO.count > 0 {
+                    let continuation = self.continuationsFIFO.first!
+                    
+                    self.continuationsFIFO.removeFirst(1)
+                    self.continuationLockIDs.removeFirst(1)
+                    
+                    continuation.resume()
+                }
+                
+                throw LockError.replaced(debugLockIDToFileAndLine[self.lastReplacingContinuationLockID!])
             }
             
             acquiredLockID = lockID
@@ -265,7 +346,10 @@ public class AsyncAwaitLockMainActor {
         
         if self.continuationsFIFO.count > 0 {
             let continuation = self.continuationsFIFO.first!
-            self.continuationsFIFO.removeFirst()
+            
+            self.continuationsFIFO.removeFirst(1)
+            self.continuationLockIDs.removeFirst(1)
+            
             continuation.resume()
         }
         else {

@@ -8,9 +8,43 @@ final class AsyncAwaitLockTests: XCTestCase {
         
         let lock = AsyncAwaitLock(name: "Test")
         
+        
+        Task {
+            print("Acquiring blocking lock O")
+            
+            let lockID: AsyncAwaitLock.LockID
+            do {
+                lockID = try await lock.acquire(file: #filePath, line: #line)
+            }
+            catch {
+                switch error as? AsyncAwaitLock.LockError {
+                case .replaced:
+                    print("Lock O was replaced, exiting Task.")
+                    return
+                default: throw error
+                }
+            }
+            
+            try! await Task.sleep(nanoseconds: 2_000_000_000)
+            
+            print("Releasing blocking lock O")
+            try! await lock.release(acquiredLockID: lockID)
+        }
         Task {
             print("Acquiring blocking lock A")
-            let lockID = await lock.acquire(file: #filePath, line: #line)
+            
+            let lockID: AsyncAwaitLock.LockID
+            do {
+                lockID = try await lock.acquire(file: #filePath, line: #line)
+            }
+            catch {
+                switch error as? AsyncAwaitLock.LockError {
+                case .replaced:
+                    print("Lock A was replaced, exiting Task.")
+                    return
+                default: throw error
+                }
+            }
             
             try! await Task.sleep(nanoseconds: 2_000_000_000)
             
@@ -18,8 +52,22 @@ final class AsyncAwaitLockTests: XCTestCase {
             try! await lock.release(acquiredLockID: lockID)
         }
         Task {
+            try! await Task.sleep(nanoseconds: 250_000_000)
+            
             print("Acquiring blocking lock B")
-            let lockID = await lock.acquire(file: #filePath, line: #line)
+            let lockID: AsyncAwaitLock.LockID
+            do {
+                lockID = try await lock.acquire(file: #filePath, line: #line)
+            }
+            catch {
+                switch error as? AsyncAwaitLock.LockError {
+                case .replaced:
+                    print("Lock B was replaced, exiting Task.")
+                    return
+                default: throw error
+                }
+            }
+            assert(false) // Should have been replaced by C
             
             try! await Task.sleep(nanoseconds: 2_000_000_000)
             
@@ -29,9 +77,23 @@ final class AsyncAwaitLockTests: XCTestCase {
         Task {
             try! await Task.sleep(nanoseconds: 500_000_000)
             print("Acquiring blocking lock C")
-            let _ = await lock.acquire(file: #filePath, line: #line)
+            let lockID: AsyncAwaitLock.LockID
+            do {
+                lockID = try await lock.acquire(replaceWaiting: true, file: #filePath, line: #line)
+            }
+            catch {
+                switch error as? AsyncAwaitLock.LockError {
+                case .replaced:
+                    print("Lock C was replaced, exiting Task.")
+                    return
+                default: throw error
+                }
+            }
             
-            // Not releasing here.
+            try! await Task.sleep(nanoseconds: 2_000_000_000)
+            
+            print("Releasing blocking lock C")
+            try! await lock.release(acquiredLockID: lockID)
         }
         Task {
             // Wait for acquire in the previous tasks.
@@ -48,11 +110,7 @@ final class AsyncAwaitLockTests: XCTestCase {
         
         // Plenty of time for those Tasks to execute.
         // Not the best kind of testing.
-        try! await Task.sleep(nanoseconds: 6_000_000_000)
-        
-        // Unknown acquiredLockID release
-        print("Releasing blocking lock C")
-        try! await lock.release(acquiredLockID: nil)
+        try! await Task.sleep(nanoseconds: 8_000_000_000)
         
         try! await lock.checkReleased()
         print("Released")

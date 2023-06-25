@@ -262,7 +262,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         }
         
         if waitAllWaitLock == nil {
-            waitAllWaitLock = Self(name: waitAllLockName)
+            waitAllWaitLock = AsyncAwaitLock(name: waitAllLockName)
         }
         let waitAllWaitLock = waitAllWaitLock!
         waitAllLockID = try await waitAllWaitLock.acquireNonWaiting()
@@ -283,7 +283,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         }
         
         if failAllWaitLock == nil {
-            failAllWaitLock = Self(name: failAllLockName)
+            failAllWaitLock = AsyncAwaitLock(name: failAllLockName)
         }
         let failAllWaitLock = failAllWaitLock!
         failAllLockID = try await failAllWaitLock.acquireNonWaiting()

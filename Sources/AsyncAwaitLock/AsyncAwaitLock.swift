@@ -170,7 +170,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     }
     
     
-    public func release(acquiredLockID: LockID, ignoreRepeatRelease: Bool = false) throws {
+    public func release(acquiredLockID: LockID, ignoreRepeatRelease: Bool = false) async throws {
         if disposed {
             fatalError("Attempted to release disposed() lock named \(name)")
         }
@@ -179,9 +179,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
             prematureReleaseLockIDs.remove(acquiredLockID)
             
             if failAllLockID != nil && failedContinuationsLockIDs.isEmpty {
-                Task {
-                    try! await failAllWaitLock!.release(acquiredLockID: failAllLockID!, ignoreRepeatRelease: true)
-                }
+                try! await failAllWaitLock!.release(acquiredLockID: failAllLockID!, ignoreRepeatRelease: true)
             }
             
             return
@@ -224,6 +222,10 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         else {
             self.acquiredLockID = nil
             debugLockIDToFileAndLine.removeAll(keepingCapacity: true)
+            
+            if waitAllLockID != nil {
+                try! await waitAllWaitLock!.release(acquiredLockID: waitAllLockID!, ignoreRepeatRelease: true)
+            }
         }
     }
     
@@ -246,19 +248,45 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     }
     
     
+    private var waitAllWaitLock: AsyncAwaitLock? = nil
+    private var waitAllLockID: LockID? = nil
+    public func waitAll() async throws {
+        let waitAllLockName = "__waitAllWaitLock__"
+        if name == waitAllLockName {
+            fatalError("\(waitAllLockName) is a reserved name.")
+        }
+        
+        if isAcquired == false {
+            assert(continuationsFIFO.isEmpty)
+            return
+        }
+        
+        if waitAllWaitLock == nil {
+            waitAllWaitLock = Self(name: waitAllLockName)
+        }
+        let waitAllWaitLock = waitAllWaitLock!
+        waitAllLockID = try await waitAllWaitLock.acquireNonWaiting()
+        
+        let waitAllLockIDWait = try! await waitAllWaitLock.acquire()
+        waitAllLockID = nil
+        
+        try! await waitAllWaitLock.release(acquiredLockID: waitAllLockIDWait)
+    }
+    
+    
     private var failAllWaitLock: AsyncAwaitLock? = nil
     private var failAllLockID: LockID? = nil
-    public func failAll() async {
+    public func failAll() async throws {
         let failAllLockName = "__failAllWaitLock__"
         if name == failAllLockName {
             fatalError("\(failAllLockName) is a reserved name.")
         }
         
         if failAllWaitLock == nil {
-            failAllWaitLock = AsyncAwaitLock(name: failAllLockName)
+            failAllWaitLock = Self(name: failAllLockName)
         }
         let failAllWaitLock = failAllWaitLock!
-        failAllLockID = try! await failAllWaitLock.acquireNonWaiting()
+        failAllLockID = try await failAllWaitLock.acquireNonWaiting()
         
         let continuations = self.continuationsFIFO
         self.continuationsFIFO.removeAll(keepingCapacity: true)
@@ -300,6 +328,10 @@ public actor AsyncAwaitLock: CustomStringConvertible {
             debugLockIDToFileAndLine.removeAll(keepingCapacity: true)
             
             try! await failAllWaitLock.release(acquiredLockID: failAllLockIDCopy)
+        }
+        
+        if waitAllLockID != nil {
+            try! await waitAllWaitLock!.release(acquiredLockID: waitAllLockID!, ignoreRepeatRelease: true)
         }
     }
     

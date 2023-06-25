@@ -112,9 +112,8 @@ final class AsyncAwaitLockTests: XCTestCase {
             }
         }
         
-        // Plenty of time for those Tasks to execute.
-        // Not the best kind of testing.
-        try! await Task.sleep(nanoseconds: 8_000_000_000)
+        try! await Task.sleep(nanoseconds: 1_000_000_000)
+        try! await lock.waitAll()
         
         try! await lock.checkReleased()
         print("Released all locks, everything clean.")
@@ -169,7 +168,7 @@ final class AsyncAwaitLockTests: XCTestCase {
             try! await lock.release(acquiredLockID: lockID)
         }
         try! await Task.sleep(nanoseconds: 500_000_000)
-        await lock.failAll()
+        try! await lock.failAll()
         try! await lock.checkReleased()
         
         print("Released all locks, everything clean.")

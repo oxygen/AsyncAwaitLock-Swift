@@ -2,7 +2,8 @@ import Foundation
 import Dispatch
 
 
-public actor AsyncAwaitLock: CustomStringConvertible {
+@MainActor
+public class AsyncAwaitLockMainActor: CustomStringConvertible {
     public typealias LockID = UInt64
     
     public enum LockError: Error {

@@ -1,14 +1,23 @@
 import Foundation
 
 
-public actor AsyncAwaitLock: CustomStringConvertible {
+
+// WARNING: AsyncAwaitLockMainActor doesn't have unit tests yet and is suposed to be referenced from a @MainActor class and used inside an @MainActor environment. Perhaps Swift 5.9 custom executors will also help put multiple actors on the same thread and relax actor isolation for a group of actors? One can dream.
+// WARNING: Only AsyncAwaitLock has unit tests.
+//
+// Code on @MainActor runs on the main thread
+// which means no additional penalty for context switching between threads
+// if used by code on the main actor.
+
+@MainActor
+public class AsyncAwaitLockMainActor: CustomStringConvertible {
     public typealias LockID = UInt64
     
     public enum LockError: Error {
         case disposed(name: String)
-        case notAcquired(lock: AsyncAwaitLock)
-        case acquiredElsewhere(lock: AsyncAwaitLock, (file: String, line: Int)? = nil)
-        case replaced(lock: AsyncAwaitLock, (file: String, line: Int)? = nil)
+        case notAcquired(lock: AsyncAwaitLockMainActor?)
+        case acquiredElsewhere(lock: AsyncAwaitLockMainActor, (file: String, line: Int)? = nil)
+        case replaced(lock: AsyncAwaitLockMainActor, (file: String, line: Int)? = nil)
     }
     
     public nonisolated let name: String
@@ -66,13 +75,10 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         failNewAcquires()
         failAllInner(error: LockError.disposed(name: name))
         
-        Task { [self] in
-            await waitAllWaitLock?.failAllInner(error: LockError.disposed(name: name))
-            await waitAllWaitLock?.dispose()
-            waitAllWaitLock = nil
-        }
-        
-        
+        waitAllWaitLock?.failAllInner(error: LockError.disposed(name: name))
+        waitAllWaitLock?.dispose()
+        waitAllWaitLock = nil
+
         disposed = true
     }
     
@@ -151,7 +157,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     }
     
     
-    public func release(acquiredLockID: LockID, ignoreRepeatRelease: Bool = false) async throws {
+    public func release(acquiredLockID: LockID, ignoreRepeatRelease: Bool = false) throws {
         if prematureReleaseLockIDs.contains(acquiredLockID) {
             prematureReleaseLockIDs.remove(acquiredLockID)
             
@@ -197,7 +203,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
             debugLockIDToFileAndLine.removeAll(keepingCapacity: true)
             
             if waitAllLockID != nil {
-                try! await waitAllWaitLock!.release(acquiredLockID: waitAllLockID!, ignoreRepeatRelease: true)
+                try! waitAllWaitLock!.release(acquiredLockID: waitAllLockID!, ignoreRepeatRelease: true)
             }
         }
     }
@@ -223,7 +229,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     }
     
     
-    private var waitAllWaitLock: AsyncAwaitLock? = nil
+    private var waitAllWaitLock: AsyncAwaitLockMainActor? = nil
     private var waitAllLockID: LockID? = nil
     public func waitAll() async throws {
         if disposed {
@@ -241,7 +247,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         }
         
         if waitAllWaitLock == nil {
-            waitAllWaitLock = AsyncAwaitLock(name: waitAllLockName)
+            waitAllWaitLock = AsyncAwaitLockMainActor(name: waitAllLockName)
         }
         let waitAllWaitLock = waitAllWaitLock!
         waitAllLockID = try await waitAllWaitLock.acquireNonWaiting()
@@ -249,11 +255,11 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         let waitAllLockIDWait = try! await waitAllWaitLock.acquire()
         waitAllLockID = nil
         
-        try! await waitAllWaitLock.release(acquiredLockID: waitAllLockIDWait)
+        try! waitAllWaitLock.release(acquiredLockID: waitAllLockIDWait)
     }
     
-
-    private func failAllInner(error: LockError) {
+    
+    internal func failAllInner(error: LockError) {
         let continuations = continuationsFIFO
         continuationsFIFO.removeAll(keepingCapacity: true)
         continuationLockIDsFIFO.removeAll(keepingCapacity: true)
@@ -270,9 +276,10 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         }
     }
     
-    public func failAll() async throws {
+    
+    public func failAll() throws {
         failAllInner(error: LockError.notAcquired(lock: self))
-
+        
         if disposed == true {
             return
         }
@@ -280,7 +287,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         if waitAllLockID != nil {
             let waitAllLockIDCopy = waitAllLockID!
             waitAllLockID = nil
-            try! await waitAllWaitLock!.release(acquiredLockID: waitAllLockIDCopy, ignoreRepeatRelease: true)
+            try! waitAllWaitLock!.release(acquiredLockID: waitAllLockIDCopy, ignoreRepeatRelease: true)
         }
     }
     

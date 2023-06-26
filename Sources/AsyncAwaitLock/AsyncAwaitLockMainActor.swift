@@ -15,7 +15,9 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
     
     public enum LockError: Error {
         case disposed(name: String)
-        case notAcquired(lock: AsyncAwaitLockMainActor?)
+        case notAcquired(lock: AsyncAwaitLockMainActor)
+        case expresslyFailed(lock: AsyncAwaitLockMainActor, methodName: String)
+        case timedOutWaiting(lock: AsyncAwaitLockMainActor, timeout: TimeInterval)
         case acquiredElsewhere(lock: AsyncAwaitLockMainActor, (file: String, line: Int)? = nil)
         case replaced(lock: AsyncAwaitLockMainActor, (file: String, line: Int)? = nil)
     }
@@ -141,7 +143,7 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
                         let index = continuationsAndLockIDsFIFO.firstIndex(where: { $0.lockID == lockID })
                         if index != nil {
                             continuationsAndLockIDsFIFO.remove(at: index!)
-                            continuation.resume(throwing: LockError.notAcquired(lock: self))
+                            continuation.resume(throwing: LockError.timedOutWaiting(lock: self, timeout: timeout!))
                         }
                     }
                 }
@@ -252,9 +254,22 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
         let waitAllWaitLock = waitAllWaitLock!
         waitAllLockID = try await waitAllWaitLock.acquireNonWaiting()
         
-        let waitAllLockIDWait = try! await waitAllWaitLock.acquire()
-        waitAllLockID = nil
+        let waitAllLockIDWait: LockID
+        do {
+            waitAllLockIDWait = try await waitAllWaitLock.acquire()
+        }
+        catch {
+            switch error as! LockError {
+            case .disposed: return
+            case .expresslyFailed: return
+            case .acquiredElsewhere: fatalError(error.localizedDescription)
+            case .notAcquired: fatalError(error.localizedDescription)
+            case .timedOutWaiting: fatalError(error.localizedDescription)
+            case .replaced: fatalError(error.localizedDescription)
+            }
+        }
         
+        waitAllLockID = nil
         try! waitAllWaitLock.release(acquiredLockID: waitAllLockIDWait)
     }
     
@@ -277,7 +292,7 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
     
     
     public func failAll() throws {
-        failAllInner(error: LockError.notAcquired(lock: self))
+        failAllInner(error: LockError.expresslyFailed(lock: self, methodName: #function))
         
         if disposed == true {
             return

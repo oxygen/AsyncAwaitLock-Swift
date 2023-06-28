@@ -192,8 +192,13 @@ final class AsyncAwaitLockTests: XCTestCase {
         }
         try! await Task.sleep(nanoseconds: 500_000_000)
         print("Failling all waiting locks.")
+        await lock.failNewAcquires()
         try! await lock.failAll()
         try! await lock.checkReleased()
+        Task {
+            await lock.dispose()
+        }
+        
         
         print("Released all locks, everything clean.")
         print("-------------------------------------")

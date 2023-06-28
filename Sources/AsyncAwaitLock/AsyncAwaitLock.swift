@@ -61,7 +61,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     
     // Same as deinit, except it can be called purposefully.
     private var disposed = false
-    public func dispose() {
+    public func dispose() async {
         if continuationsAndLockIDsFIFO.count > 0 {
             print("WARNING: AsyncAwaitSemaphore named \(name) unlocked inside dispose().")
         }
@@ -69,11 +69,10 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         failNewAcquires()
         failAllInner(error: LockError.disposed(name: name))
         
-        Task { [self] in
-            await waitAllWaitLock?.failAllInner(error: LockError.disposed(name: name))
-            await waitAllWaitLock?.dispose()
-            waitAllWaitLock = nil
-        }
+        
+        await waitAllWaitLock?.failAllInner(error: LockError.disposed(name: name))
+        await waitAllWaitLock?.dispose()
+        waitAllWaitLock = nil
         
         
         disposed = true

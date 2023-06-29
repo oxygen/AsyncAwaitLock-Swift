@@ -1,24 +1,27 @@
 import XCTest
 import AsyncAwaitLock
 
-final class AsyncAwaitLockTests: XCTestCase {
+@MainActor
+final class AsyncAwaitLockMainActorTests: XCTestCase {
     func testExample() async throws {
         // Use XCTAssert and related functions to verify your tests produce the correct
         // results.
         
-        let lock = AsyncAwaitLock(name: "Test")
+        print("--------**** Begin MainActor **** -------")
+        
+        let lock = AsyncAwaitLockMainActor(name: "Test")
         
         
-        Task.detached {
+        Task {
             print("Acquiring blocking lock O")
             
-            let lockID: AsyncAwaitLock.LockID
+            let lockID: AsyncAwaitLockMainActor.LockID
             do {
                 lockID = try await lock.acquire(file: #filePath, line: #line)
                 print("Acquired lock O")
             }
             catch {
-                switch error as! AsyncAwaitLock.LockError {
+                switch error as! AsyncAwaitLockMainActor.LockError {
                 case .replaced:
                     print("Lock O was replaced, exiting Task.")
                     return
@@ -29,18 +32,18 @@ final class AsyncAwaitLockTests: XCTestCase {
             try! await Task.sleep(nanoseconds: 2_000_000_000)
             
             print("Releasing blocking lock O")
-            try! await lock.release(acquiredLockID: lockID)
+            try! lock.release(acquiredLockID: lockID)
         }
-        Task.detached {
+        Task {
             print("Acquiring blocking lock A")
             
-            let lockID: AsyncAwaitLock.LockID
+            let lockID: AsyncAwaitLockMainActor.LockID
             do {
                 lockID = try await lock.acquire(file: #filePath, line: #line)
                 print("Acquired lock A")
             }
             catch {
-                switch error as! AsyncAwaitLock.LockError {
+                switch error as! AsyncAwaitLockMainActor.LockError {
                 case .replaced:
                     print("Lock A was replaced, exiting Task.")
                     return
@@ -51,19 +54,19 @@ final class AsyncAwaitLockTests: XCTestCase {
             try! await Task.sleep(nanoseconds: 2_000_000_000)
             
             print("Releasing blocking lock A")
-            try! await lock.release(acquiredLockID: lockID)
+            try! lock.release(acquiredLockID: lockID)
         }
-        Task.detached {
+        Task {
             try! await Task.sleep(nanoseconds: 250_000_000)
             
             print("Acquiring blocking lock B")
-            let lockID: AsyncAwaitLock.LockID
+            let lockID: AsyncAwaitLockMainActor.LockID
             do {
                 lockID = try await lock.acquire(file: #filePath, line: #line)
                 print("Acquired lock B")
             }
             catch {
-                switch error as! AsyncAwaitLock.LockError {
+                switch error as! AsyncAwaitLockMainActor.LockError {
                 case .replaced:
                     print("Lock B was replaced, exiting Task.")
                     return
@@ -75,18 +78,18 @@ final class AsyncAwaitLockTests: XCTestCase {
             try! await Task.sleep(nanoseconds: 2_000_000_000)
             
             print("Releasing blocking lock B")
-            try! await lock.release(acquiredLockID: lockID)
+            try! lock.release(acquiredLockID: lockID)
         }
-        Task.detached {
+        Task {
             try! await Task.sleep(nanoseconds: 500_000_000)
             print("Acquiring blocking lock C")
-            let lockID: AsyncAwaitLock.LockID
+            let lockID: AsyncAwaitLockMainActor.LockID
             do {
                 lockID = try await lock.acquire(replaceWaiting: true, file: #filePath, line: #line)
                 print("Acquired lock C")
             }
             catch {
-                switch error as! AsyncAwaitLock.LockError {
+                switch error as! AsyncAwaitLockMainActor.LockError {
                 case .replaced:
                     print("Lock C was replaced, exiting Task.")
                     return
@@ -97,9 +100,9 @@ final class AsyncAwaitLockTests: XCTestCase {
             try! await Task.sleep(nanoseconds: 2_000_000_000)
             
             print("Releasing blocking lock C")
-            try! await lock.release(acquiredLockID: lockID)
+            try! lock.release(acquiredLockID: lockID)
         }
-        Task.detached {
+        Task {
             try! await Task.sleep(nanoseconds: 700_000_000)
             print("Acquiring blocking lock T with timeout")
             
@@ -108,7 +111,7 @@ final class AsyncAwaitLockTests: XCTestCase {
                 assert(false)
             }
             catch {
-                switch error as! AsyncAwaitLock.LockError {
+                switch error as! AsyncAwaitLockMainActor.LockError {
                 case .timedOutWaiting:
                     print("Lock T timed out as expected.")
                     return
@@ -118,7 +121,7 @@ final class AsyncAwaitLockTests: XCTestCase {
                 }
             }
         }
-        Task.detached {
+        Task {
             // Wait for acquire in the previous tasks.
             try! await Task.sleep(nanoseconds: 1_000_000_000)
             
@@ -134,7 +137,7 @@ final class AsyncAwaitLockTests: XCTestCase {
         try! await Task.sleep(nanoseconds: 1_000_000_000)
         try! await lock.waitAll()
         
-        try! await lock.checkReleased()
+        try! lock.checkReleased()
         print("Released all locks, everything clean.")
         print("-------------------------------------")
         print("                                     ")
@@ -142,16 +145,16 @@ final class AsyncAwaitLockTests: XCTestCase {
         
         print("Testing .failAll()")
         
-        Task.detached {
+        Task {
             print("Acquiring blocking lock O")
             
-            let lockID: AsyncAwaitLock.LockID
+            let lockID: AsyncAwaitLockMainActor.LockID
             do {
                 lockID = try await lock.acquire(file: #filePath, line: #line)
                 print("Acquired lock O")
             }
             catch {
-                switch error as! AsyncAwaitLock.LockError {
+                switch error as! AsyncAwaitLockMainActor.LockError {
                 case .replaced:
                     print("Lock O was replaced, exiting Task.")
                     return
@@ -164,18 +167,18 @@ final class AsyncAwaitLockTests: XCTestCase {
             try! await Task.sleep(nanoseconds: 2_000_000_000)
             
             print("Releasing blocking lock O")
-            try! await lock.release(acquiredLockID: lockID)
+            try! lock.release(acquiredLockID: lockID)
         }
-        Task.detached {
+        Task {
             print("Acquiring blocking lock A")
             
-            let lockID: AsyncAwaitLock.LockID
+            let lockID: AsyncAwaitLockMainActor.LockID
             do {
                 lockID = try await lock.acquire(file: #filePath, line: #line)
                 print("Acquired lock A")
             }
             catch {
-                switch error as! AsyncAwaitLock.LockError {
+                switch error as! AsyncAwaitLockMainActor.LockError {
                 case .replaced:
                     print("Lock A was replaced, exiting Task.")
                     return
@@ -188,15 +191,15 @@ final class AsyncAwaitLockTests: XCTestCase {
             try! await Task.sleep(nanoseconds: 2_000_000_000)
             
             print("Releasing blocking lock A")
-            try! await lock.release(acquiredLockID: lockID)
+            try! lock.release(acquiredLockID: lockID)
         }
         try! await Task.sleep(nanoseconds: 500_000_000)
         print("Failling all waiting locks.")
-        await lock.failNewAcquires()
-        try! await lock.failAll()
-        try! await lock.checkReleased()
+        lock.failNewAcquires()
+        try! lock.failAll()
+        try! lock.checkReleased()
         Task {
-            await lock.dispose()
+            lock.dispose()
         }
         
         
@@ -205,6 +208,8 @@ final class AsyncAwaitLockTests: XCTestCase {
         print("                                     ")
         
         
-        // XCTAssertEqual(AsyncAwaitLock().text, "Hello, World!")
+        print("--------**** End MainActor **** -------")
+        
+        // XCTAssertEqual(AsyncAwaitLockMainActor().text, "Hello, World!")
     }
 }

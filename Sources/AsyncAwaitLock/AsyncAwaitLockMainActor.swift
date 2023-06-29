@@ -1,14 +1,6 @@
 import Foundation
 
 
-// WARNING: AsyncAwaitLockMainActor doesn't have unit tests yet and is suposed to be referenced from a @MainActor class and used inside an @MainActor environment. Perhaps Swift 5.9 custom executors will also help put multiple actors on the same thread and relax actor isolation for a group of actors? One can dream.
-//
-// WARNING: Only AsyncAwaitLock has unit tests.
-//
-// Code on @MainActor runs on the main thread
-// for which the main benefit is no additional penalty for context switching between threads
-// if also only used by code on the main actor.
-
 @MainActor
 public class AsyncAwaitLockMainActor: CustomStringConvertible {
     public typealias LockID = UInt64

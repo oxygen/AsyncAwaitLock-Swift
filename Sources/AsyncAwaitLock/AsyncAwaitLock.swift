@@ -6,7 +6,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     
     public enum LockError: Error {
         case disposed(name: String)
-        case notAcquired(lock: AsyncAwaitLock)
+        case prevented(lock: AsyncAwaitLock)
         case expresslyFailed(lock: AsyncAwaitLock, methodName: String)
         case timedOutWaiting(lock: AsyncAwaitLock, timeout: TimeInterval)
         case acquiredElsewhere(lock: AsyncAwaitLock, (file: String, line: Int)? = nil)
@@ -67,10 +67,10 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         }
         
         failNewAcquires()
-        failAllInner(error: LockError.disposed(name: name))
+        failAllInner(error: LockError.disposed(name: name), onlyWaiting: false)
         
         
-        await waitAllWaitLock?.failAllInner(error: LockError.disposed(name: name))
+        await waitAllWaitLock?.failAllInner(error: LockError.disposed(name: name), onlyWaiting: false)
         await waitAllWaitLock?.dispose()
         waitAllWaitLock = nil
         
@@ -104,7 +104,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         }
         
         if preventNewAcquires {
-            throw LockError.notAcquired(lock: self)
+            throw LockError.prevented(lock: self)
         }
         
         lockID += 1
@@ -164,7 +164,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         var isAlreadyReleased = false
         if isAcquired == false {
             if ignoreRepeatRelease == false {
-                throw LockError.notAcquired(lock: self)
+                throw LockError.prevented(lock: self)
             }
             else {
                 isAlreadyReleased = true
@@ -206,7 +206,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     
     public func whereAcquired() throws -> (file: String, line: Int)? {
         if isAcquired == false {
-            throw LockError.notAcquired(lock: self)
+            throw LockError.prevented(lock: self)
         }
         
         return debugLockIDToFileAndLine[self.acquiredLockID!]
@@ -257,7 +257,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
             case .disposed: return
             case .expresslyFailed: return
             case .acquiredElsewhere: fatalError(error.localizedDescription)
-            case .notAcquired: fatalError(error.localizedDescription)
+            case .prevented: fatalError(error.localizedDescription)
             case .timedOutWaiting: fatalError(error.localizedDescription)
             case .replaced: fatalError(error.localizedDescription)
             }
@@ -269,7 +269,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     }
     
 
-    private func failAllInner(error: LockError) {
+    private func failAllInner(error: LockError, onlyWaiting: Bool) {
         let continuations = continuationsAndLockIDsFIFO
         continuationsAndLockIDsFIFO.removeAll(keepingCapacity: true)
         debugLockIDToFileAndLine.removeAll(keepingCapacity: true)
@@ -279,14 +279,14 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         }
         
         // .release() for the acquired lock will be reached and will not throw.
-        if isAcquired {
+        if isAcquired && onlyWaiting == false {
             prematureReleaseLockIDs.insert(acquiredLockID!)
             acquiredLockID = nil
         }
     }
     
-    public func failAll() async throws {
-        failAllInner(error: LockError.expresslyFailed(lock: self, methodName: #function))
+    public func failAll(onlyWaiting: Bool = false) async throws {
+        failAllInner(error: LockError.expresslyFailed(lock: self, methodName: #function), onlyWaiting: onlyWaiting)
 
         if disposed == true {
             return

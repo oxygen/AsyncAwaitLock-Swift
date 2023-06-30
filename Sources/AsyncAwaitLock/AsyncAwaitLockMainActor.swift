@@ -7,6 +7,7 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
     
     public enum LockError: Error {
         case disposed(name: String)
+        case notAcquired(lock: AsyncAwaitLockMainActor)
         case prevented(lock: AsyncAwaitLockMainActor)
         case expresslyFailed(lock: AsyncAwaitLockMainActor, methodName: String)
         case timedOutWaiting(lock: AsyncAwaitLockMainActor, timeout: TimeInterval)
@@ -163,7 +164,7 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
         var isAlreadyReleased = false
         if isAcquired == false {
             if ignoreRepeatRelease == false {
-                throw LockError.prevented(lock: self)
+                throw LockError.notAcquired(lock: self)
             }
             else {
                 isAlreadyReleased = true
@@ -205,7 +206,7 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
     
     public func whereAcquired() throws -> (file: String, line: Int)? {
         if isAcquired == false {
-            throw LockError.prevented(lock: self)
+            throw LockError.notAcquired(lock: self)
         }
         
         return debugLockIDToFileAndLine[self.acquiredLockID!]
@@ -256,6 +257,7 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
             case .expresslyFailed: return
             case .acquiredElsewhere: fatalError(error.localizedDescription)
             case .prevented: fatalError(error.localizedDescription)
+            case .notAcquired: fatalError(error.localizedDescription)
             case .timedOutWaiting: fatalError(error.localizedDescription)
             case .replaced: fatalError(error.localizedDescription)
             }

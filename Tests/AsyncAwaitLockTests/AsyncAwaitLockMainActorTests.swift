@@ -103,6 +103,30 @@ final class AsyncAwaitLockMainActorTests: XCTestCase {
             try! lock.release(acquiredLockID: lockID)
         }
         Task {
+            try! await Task.sleep(nanoseconds: 800_000_000)
+            
+            print("Waiting before acquire lock non waiting")
+            assert(lock.isAcquired)
+            try? await lock.wait(file: #filePath, line: #line)
+            
+            print("Acquiring blocking lock D")
+            let lockID: AsyncAwaitLockMainActor.LockID
+            do {
+                lockID = try await lock.acquire(file: #filePath, line: #line)
+                print("Acquired lock D")
+            }
+            catch {
+                switch error as! AsyncAwaitLockMainActor.LockError {
+                default: throw error
+                }
+            }
+            
+            try! await Task.sleep(nanoseconds: 2_000_000_000)
+            
+            print("Releasing blocking lock D")
+            try! lock.release(acquiredLockID: lockID)
+        }
+        Task {
             try! await Task.sleep(nanoseconds: 700_000_000)
             print("Acquiring blocking lock T with timeout")
             
@@ -135,6 +159,10 @@ final class AsyncAwaitLockMainActorTests: XCTestCase {
         }
         
         try! await Task.sleep(nanoseconds: 1_000_000_000)
+        try! await lock.waitAll()
+        
+        // Lock D is acquired delayed.
+        lock.failNewAcquires()
         try! await lock.waitAll()
         
         try! lock.checkReleased()

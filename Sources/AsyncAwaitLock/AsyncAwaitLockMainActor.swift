@@ -153,6 +153,19 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
     }
     
     
+    public func wait(
+        timeout: TimeInterval? = nil,
+        replaceWaiting: Bool = false,
+        file: String? = nil,
+        line: Int? = nil
+    ) async throws {
+        if isAcquired {
+            let lockID: LockID = try await acquire(timeout: timeout, replaceWaiting: replaceWaiting, file: file, line: line)
+            try! release(acquiredLockID: lockID)
+        }
+    }
+    
+    
     public func release(acquiredLockID: LockID, ignoreRepeatRelease: Bool = false) throws {
         if prematureReleaseLockIDs.contains(acquiredLockID) {
             prematureReleaseLockIDs.remove(acquiredLockID)

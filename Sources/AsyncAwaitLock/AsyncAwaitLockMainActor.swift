@@ -155,12 +155,34 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
     
     public func wait(
         timeout: TimeInterval? = nil,
-        replaceWaiting: Bool = false,
         file: String? = nil,
         line: Int? = nil
     ) async throws {
         if isAcquired {
-            let lockID: LockID = try await acquire(timeout: timeout, replaceWaiting: replaceWaiting, file: file, line: line)
+            var lockID: LockID = 0
+            
+            var wasReplaced: Bool
+            repeat {
+                if isAcquired == false {
+                    return
+                }
+                
+                wasReplaced = false
+                
+                do {
+                    lockID = try await acquire(timeout: timeout, replaceWaiting: false, file: file, line: line)
+                }
+                catch {
+                    switch error as! LockError {
+                    case .replaced:
+                        wasReplaced = true
+                        continue
+                    default:
+                        throw error
+                    }
+                }
+            } while wasReplaced
+                        
             try! release(acquiredLockID: lockID)
         }
     }

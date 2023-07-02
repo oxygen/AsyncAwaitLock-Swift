@@ -5,7 +5,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     public typealias LockID = UInt64
     
     public enum LockError: Error {
-        case disposed(name: String)
+        case disposed(name: String, acquiredLockID: LockID? = nil, (file: String, line: Int)? = nil)
         case notAcquired(lock: AsyncAwaitLock)
         case prevented(lock: AsyncAwaitLock)
         case expresslyFailed(lock: AsyncAwaitLock, methodName: String)
@@ -25,6 +25,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     
     public private(set) var acquiredLockID: LockID? = nil
     
+    static private let undefinedLockID: LockID = 0
     private var lockID: LockID = 0
     
     private var preventNewAcquires: Bool = false
@@ -47,12 +48,13 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         
         let continuations = continuationsAndLockIDsFIFO
         continuationsAndLockIDsFIFO.removeAll()
-        debugLockIDToFileAndLine.removeAll()
-        
+
         for (continuation, _, timeoutTask) in continuations {
             timeoutTask?.cancel()
-            continuation.resume(throwing: LockError.disposed(name: name))
+            continuation.resume(throwing: LockError.disposed(name: name, acquiredLockID: acquiredLockID, debugLockIDToFileAndLine[acquiredLockID ?? Self.undefinedLockID]))
         }
+        
+        debugLockIDToFileAndLine.removeAll()
         
         // .release() for the acquired lock will be reached and will not throw.
         if acquiredLockID != nil {
@@ -70,10 +72,10 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         }
         
         failNewAcquires()
-        failAllInner(error: LockError.disposed(name: name), onlyWaiting: false)
+        failAllInner(error: LockError.disposed(name: name, acquiredLockID: acquiredLockID, debugLockIDToFileAndLine[acquiredLockID ?? Self.undefinedLockID]), onlyWaiting: false)
         
         
-        await waitAllWaitLock?.failAllInner(error: LockError.disposed(name: name), onlyWaiting: false)
+        await waitAllWaitLock?.failAllInner(error: LockError.disposed(name: name, acquiredLockID: acquiredLockID, debugLockIDToFileAndLine[acquiredLockID ?? Self.undefinedLockID]), onlyWaiting: false)
         await waitAllWaitLock?.dispose()
         waitAllWaitLock = nil
         
@@ -112,6 +114,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         
         lockID += 1
         let lockID = lockID
+        assert(lockID != Self.undefinedLockID)
         
         if isAcquired == false {
             acquiredLockID = lockID

@@ -107,7 +107,7 @@ final class AsyncAwaitLockMainActorTests: XCTestCase {
             
             print("Waiting before acquire lock non waiting")
             assert(lock.isAcquired)
-            try? await lock.wait(file: #filePath, line: #line)
+            try? await lock.wait()
             
             print("Acquiring blocking lock D")
             let lockID: AsyncAwaitLockMainActor.LockID

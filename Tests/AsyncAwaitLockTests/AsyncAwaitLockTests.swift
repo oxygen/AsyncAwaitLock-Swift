@@ -106,7 +106,7 @@ final class AsyncAwaitLockTests: XCTestCase {
             if await lock.isAcquired == false {
                 assert(false)
             }
-            try? await lock.wait(file: #filePath, line: #line)
+            try? await lock.wait()
             
             print("Acquiring blocking lock D")
             let lockID: AsyncAwaitLockMainActor.LockID

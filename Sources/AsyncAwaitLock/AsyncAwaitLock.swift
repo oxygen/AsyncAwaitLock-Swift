@@ -1,4 +1,4 @@
-import Foundation
+import SwiftUI
 
 
 public actor AsyncAwaitLock: CustomStringConvertible {
@@ -30,7 +30,8 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     private var preventNewAcquires: Bool = false
     private var continuationsAndLockIDsFIFO: [(
         continuation: CheckedContinuation<Void, any Error>,
-        lockID: LockID
+        lockID: LockID,
+        timeoutTask: Task<Void, Never>?
     )] = []
     private var prematureReleaseLockIDs: Set<LockID> = []
     private var debugLockIDToFileAndLine: Dictionary<LockID, (file: String, line: Int)> = [:]
@@ -48,7 +49,8 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         continuationsAndLockIDsFIFO.removeAll()
         debugLockIDToFileAndLine.removeAll()
         
-        for (continuation, _) in continuations {
+        for (continuation, _, timeoutTask) in continuations {
+            timeoutTask?.cancel()
             continuation.resume(throwing: LockError.disposed(name: name))
         }
         
@@ -119,20 +121,24 @@ public actor AsyncAwaitLock: CustomStringConvertible {
                 let continuations = continuationsAndLockIDsFIFO
                 continuationsAndLockIDsFIFO.removeAll(keepingCapacity: true)
                 
-                for (continuation, _) in continuations {
+                for (continuation, _, timeoutTask) in continuations {
+                    timeoutTask?.cancel()
                     continuation.resume(throwing: LockError.replaced(lock: self, debugLockIDToFileAndLine[lockID]))
                 }
             }
             
-            try await withCheckedThrowingContinuation { [self] continuation in
-                continuationsAndLockIDsFIFO.append((
-                    continuation: continuation,
-                    lockID: lockID
-                ))
+            try await withCheckedThrowingContinuation { [self] (continuation: CheckedContinuation<Void, Error>) in
+                var sleepTask: Task<Void, Never>? = nil
                 
                 if timeout != nil {
-                    Task { [self] in
-                        try! await Task.sleep(nanoseconds: UInt64(1_000_000_000 * timeout!))
+                    sleepTask = Task { [self] in
+                        do {
+                            try await Task.sleep(nanoseconds: UInt64(1_000_000_000 * timeout!))
+                        }
+                        catch {
+                            // Only CancellationError is thrown here.
+                            return
+                        }
                         
                         let index = continuationsAndLockIDsFIFO.firstIndex(where: { $0.lockID == lockID })
                         if index != nil {
@@ -141,6 +147,12 @@ public actor AsyncAwaitLock: CustomStringConvertible {
                         }
                     }
                 }
+                
+                continuationsAndLockIDsFIFO.append((
+                    continuation: continuation,
+                    lockID: lockID,
+                    timeoutTask: sleepTask
+                ))
             }
             
             acquiredLockID = lockID
@@ -154,11 +166,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     }
     
     
-    public func wait(
-        timeout: TimeInterval? = nil,
-        file: String? = nil,
-        line: Int? = nil
-    ) async throws {
+    public func wait(timeout: TimeInterval? = nil) async throws {
         if isAcquired {
             var lockID: LockID = 0
             
@@ -171,7 +179,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
                 wasReplaced = false
                 
                 do {
-                    lockID = try await acquire(timeout: timeout, replaceWaiting: false, file: file, line: line)
+                    lockID = try await acquire(timeout: timeout)
                 }
                 catch {
                     switch error as! LockError {
@@ -224,8 +232,9 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         
         
         if continuationsAndLockIDsFIFO.count > 0 {
-            let (continuation, lockIDRemoved) = continuationsAndLockIDsFIFO.removeFirst()
+            let (continuation, lockIDRemoved, timeoutTask) = continuationsAndLockIDsFIFO.removeFirst()
             debugLockIDToFileAndLine.removeValue(forKey: lockIDRemoved)
+            timeoutTask?.cancel()
             
             continuation.resume()
         }
@@ -311,7 +320,8 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         continuationsAndLockIDsFIFO.removeAll(keepingCapacity: true)
         debugLockIDToFileAndLine.removeAll(keepingCapacity: true)
         
-        for (continuation, _) in continuations {
+        for (continuation, _, timeoutTask) in continuations {
+            timeoutTask?.cancel()
             continuation.resume(throwing: error)
         }
         

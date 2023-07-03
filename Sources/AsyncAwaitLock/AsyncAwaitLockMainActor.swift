@@ -15,6 +15,18 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
         case replaced(lock: AsyncAwaitLockMainActor, (file: String, line: Int)? = nil)
     }
     
+    public enum OnReplaced {
+        case keepWaiting
+        case resetTimeout
+        case resume
+        case throwReplaced
+    }
+    
+    public enum OnTimeout {
+        case resume
+        case throwTimedOutWaiting
+    }
+    
     public nonisolated let name: String
     public nonisolated var description: String {
         name
@@ -33,7 +45,8 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
     private var continuationsAndLockIDsFIFO: [(
         continuation: CheckedContinuation<Void, any Error>,
         lockID: LockID,
-        timeoutTask: Task<Void, Never>?
+        timeoutTask: Task<Void, Never>?,
+        onReplaced: OnReplaced
     )] = []
     private var prematureReleaseLockIDs: Set<LockID> = []
     private var debugLockIDToFileAndLine: Dictionary<LockID, (file: String, line: Int)> = [:]
@@ -50,7 +63,7 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
         let continuations = continuationsAndLockIDsFIFO
         continuationsAndLockIDsFIFO.removeAll()
         
-        for (continuation, _, timeoutTask) in continuations {
+        for (continuation, _, timeoutTask, _) in continuations {
             timeoutTask?.cancel()
             continuation.resume(throwing: LockError.disposed(name: name, acquiredLockID: acquiredLockID, debugLockIDToFileAndLine[acquiredLockID ?? Self.undefinedLockID]))
         }
@@ -100,73 +113,125 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
     public func acquire(
         timeout: TimeInterval? = nil,
         replaceWaiting: Bool = false,
+        onReplaced: OnReplaced = .throwReplaced,
+        onTimeout: OnTimeout = .throwTimedOutWaiting,
         file: String? = nil,
         line: Int? = nil
     ) async throws -> LockID {
-        if disposed {
-            fatalError("Attempted to lock disposed() lock named \(name)")
-        }
+        var resetTimeout: Bool
         
-        if preventNewAcquires {
-            throw LockError.prevented(lock: self)
-        }
-        
-        lockID += 1
-        let lockID = lockID
-        assert(lockID != Self.undefinedLockID)
-        
-        if isAcquired == false {
-            acquiredLockID = lockID
-        }
-        else {
-            if replaceWaiting {
-                let continuations = continuationsAndLockIDsFIFO
-                continuationsAndLockIDsFIFO.removeAll(keepingCapacity: true)
-                
-                for (continuation, _, timeoutTask) in continuations {
-                    timeoutTask?.cancel()
-                    continuation.resume(throwing: LockError.replaced(lock: self, debugLockIDToFileAndLine[lockID]))
-                }
-            }
+        repeat {
+            resetTimeout = false
             
-            try await withCheckedThrowingContinuation { [self] (continuation: CheckedContinuation<Void, Error>) in
-                var sleepTask: Task<Void, Never>? = nil
+            do {
                 
-                if timeout != nil {
-                    sleepTask = Task { [self] in
-                        try! await Task.sleep(nanoseconds: UInt64(1_000_000_000 * timeout!))
+                if disposed {
+                    fatalError("Attempted to lock disposed() lock named \(name)")
+                }
+                
+                if preventNewAcquires {
+                    throw LockError.prevented(lock: self)
+                }
+                
+                lockID += 1
+                let lockID = lockID
+                assert(lockID != Self.undefinedLockID)
+                
+                if isAcquired == false {
+                    acquiredLockID = lockID
+                }
+                else {
+                    if replaceWaiting {
+                        let continuationsKeepWaiting = continuationsAndLockIDsFIFO.filter({
+                            $0.onReplaced == .keepWaiting
+                        })
+                        let continuationsOther = continuationsAndLockIDsFIFO.filter({
+                            $0.onReplaced != .keepWaiting
+                        })
+                        continuationsAndLockIDsFIFO.removeAll(keepingCapacity: true)
+                        continuationsAndLockIDsFIFO.append(contentsOf: continuationsKeepWaiting)
                         
-                        let index = continuationsAndLockIDsFIFO.firstIndex(where: { $0.lockID == lockID })
-                        if index != nil {
-                            continuationsAndLockIDsFIFO.remove(at: index!)
-                            continuation.resume(throwing: LockError.timedOutWaiting(lock: self, timeout: timeout!))
+                        for (continuation, _, timeoutTask, _) in continuationsOther {
+                            timeoutTask?.cancel()
+                            continuation.resume(throwing: LockError.replaced(lock: self, debugLockIDToFileAndLine[lockID]))
                         }
                     }
+                    
+                    try await withCheckedThrowingContinuation { [self] (continuation: CheckedContinuation<Void, Error>) in
+                        var sleepTask: Task<Void, Never>? = nil
+                        
+                        if timeout != nil {
+                            sleepTask = Task { [self] in
+                                try! await Task.sleep(nanoseconds: UInt64(1_000_000_000 * timeout!))
+                                
+                                let index = continuationsAndLockIDsFIFO.firstIndex(where: { $0.lockID == lockID })
+                                if index != nil {
+                                    continuationsAndLockIDsFIFO.remove(at: index!)
+                                    continuation.resume(throwing: LockError.timedOutWaiting(lock: self, timeout: timeout!))
+                                }
+                            }
+                        }
+                        
+                        continuationsAndLockIDsFIFO.append((
+                            continuation: continuation,
+                            lockID: lockID,
+                            timeoutTask: sleepTask,
+                            onReplaced: onReplaced
+                        ))
+                    }
+                    
+                    acquiredLockID = lockID
                 }
                 
-                continuationsAndLockIDsFIFO.append((
-                    continuation: continuation,
-                    lockID: lockID,
-                    timeoutTask: sleepTask
-                ))
+                if file != nil || line != nil {
+                    debugLockIDToFileAndLine[acquiredLockID!] = (file: file ?? "", line: line ?? -1)
+                }
+                
+                return acquiredLockID!
             }
-            
-            acquiredLockID = lockID
-        }
-        
-        if file != nil || line != nil {
-            debugLockIDToFileAndLine[acquiredLockID!] = (file: file ?? "", line: line ?? -1)
-        }
-        
-        return acquiredLockID!
+            catch {
+                switch error as! LockError {
+                case .timedOutWaiting:
+                    switch onTimeout {
+                    case .resume:
+                        prematureReleaseLockIDs.insert(lockID)
+                        return lockID
+                    case .throwTimedOutWaiting:
+                        throw error
+                    }
+                    
+                case .replaced:
+                    switch onReplaced {
+                    case .keepWaiting:
+                        fatalError(".keepWaiting should have been handled by keeping and not resuming the continuation.")
+                    case .resetTimeout:
+                        resetTimeout = true
+                    case .resume:
+                        prematureReleaseLockIDs.insert(lockID)
+                        return lockID
+                    case .throwReplaced:
+                        throw error
+                    }
+                    
+                default:
+                    throw error
+                    
+                }
+            }
+        } while resetTimeout
     }
     
     
-    public func wait(timeout: TimeInterval? = nil) async throws {
+    public func wait(
+        timeout: TimeInterval? = nil,
+        onReplaced: OnReplaced = .keepWaiting,
+        onTimeout: OnTimeout = .throwTimedOutWaiting
+    ) async throws {
         if isAcquired {
             var lockID: LockID = 0
             
             var wasReplaced: Bool
+            
             repeat {
                 if isAcquired == false {
                     return
@@ -175,19 +240,39 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
                 wasReplaced = false
                 
                 do {
-                    lockID = try await acquire(timeout: timeout)
+                    let lockOnReplaced: OnReplaced
+                    switch onReplaced {
+                    case .keepWaiting: lockOnReplaced = .keepWaiting
+                    case .resetTimeout: lockOnReplaced = .throwReplaced
+                    case .resume: lockOnReplaced = .throwReplaced
+                    case .throwReplaced: lockOnReplaced = .throwReplaced
+                    }
+                    lockID = try await acquire(
+                        timeout: timeout,
+                        onReplaced: lockOnReplaced,
+                        onTimeout: .throwTimedOutWaiting
+                    )
                 }
                 catch {
                     switch error as! LockError {
+                    case .timedOutWaiting:
+                        switch onTimeout {
+                        case .resume: return
+                        case .throwTimedOutWaiting: throw error
+                        }
                     case .replaced:
-                        wasReplaced = true
-                        continue
+                        switch onReplaced {
+                        case .resume: return
+                        case .keepWaiting: fatalError(".keepWaiting should have been handled by keeping and not resuming the continuation.")
+                        case .resetTimeout: wasReplaced = true
+                        case .throwReplaced: throw error
+                        }
                     default:
                         throw error
                     }
                 }
             } while wasReplaced
-                        
+            
             try! release(acquiredLockID: lockID)
         }
     }
@@ -228,7 +313,7 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
         
         
         if continuationsAndLockIDsFIFO.count > 0 {
-            let (continuation, lockIDRemoved, timeoutTask) = continuationsAndLockIDsFIFO.removeFirst()
+            let (continuation, lockIDRemoved, timeoutTask, _) = continuationsAndLockIDsFIFO.removeFirst()
             debugLockIDToFileAndLine.removeValue(forKey: lockIDRemoved)
             timeoutTask?.cancel()
             
@@ -314,7 +399,7 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
         continuationsAndLockIDsFIFO.removeAll(keepingCapacity: true)
         debugLockIDToFileAndLine.removeAll(keepingCapacity: true)
         
-        for (continuation, _, timeoutTask) in continuations {
+        for (continuation, _, timeoutTask, _) in continuations {
             timeoutTask?.cancel()
             continuation.resume(throwing: error)
         }

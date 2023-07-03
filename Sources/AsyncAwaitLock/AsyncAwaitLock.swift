@@ -225,6 +225,8 @@ public actor AsyncAwaitLock: CustomStringConvertible {
                 }
             }
         } while resetTimeout
+        
+        fatalError("Unreacheable code")
     }
     
     

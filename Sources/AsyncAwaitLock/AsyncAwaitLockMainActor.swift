@@ -219,6 +219,8 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
                 }
             }
         } while resetTimeout
+        
+        fatalError("Unreacheable code")
     }
     
     

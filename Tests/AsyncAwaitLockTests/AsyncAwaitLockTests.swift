@@ -5,7 +5,6 @@ final class AsyncAwaitLockTests: XCTestCase {
     func testExample() async throws {
         // Use XCTAssert and related functions to verify your tests produce the correct
         // results.
-        
         let lock = AsyncAwaitLock(name: "Test")
         
         
@@ -109,13 +108,13 @@ final class AsyncAwaitLockTests: XCTestCase {
             try? await lock.wait()
             
             print("Acquiring blocking lock D")
-            let lockID: AsyncAwaitLockMainActor.LockID
+            let lockID: AsyncAwaitLock.LockID
             do {
                 lockID = try await lock.acquire((#filePath, #line, Date()))
                 print("Acquired lock D")
             }
             catch {
-                switch error as! AsyncAwaitLockMainActor.LockError {
+                switch error as! AsyncAwaitLock.LockError {
                 default: throw error
                 }
             }

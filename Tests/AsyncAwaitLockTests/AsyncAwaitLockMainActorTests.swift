@@ -226,9 +226,7 @@ final class AsyncAwaitLockMainActorTests: XCTestCase {
         lock.failNewAcquires()
         try! lock.failAll()
         try! lock.checkReleased()
-        Task {
-            lock.dispose()
-        }
+        lock.dispose()
         
         
         print("Released all locks, everything clean.")

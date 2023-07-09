@@ -66,13 +66,16 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     private var prematureReleaseLockIDs: Set<LockID> = []
     private var debugLockIDToSourceLocation: Dictionary<LockID, SourceLocation> = [:]
     
+    private var waitAllWaitLock: AsyncAwaitLock? = nil
+    
+    
     // From Apple’s docs: The checked continuation offers detection of mis-use,
     // and dropping the last reference to it,
     // without having resumed it will trigger a warning.
     // Resuming a continuation twice is also diagnosed and will cause a crash.
     deinit {
         if continuationsAndLockIDsFIFO.count > 0 {
-            print("WARNING: AsyncAwaitSemaphore named \(name) unlocked inside deinit.")
+            print("WARNING: AsyncAwaitSemaphore.deinit: Lock named \(name) waiting continuations resumed by throwing .disposed error.")
         }
         
         let continuations = continuationsAndLockIDsFIFO
@@ -86,7 +89,11 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         debugLockIDToSourceLocation.removeAll()
         
         // .release() for the acquired lock will be reached and will not throw.
+        // However what will happen is unknown since deinit ran somehow (weak reference?).
         if acquiredLockID != nil {
+            if name.hasSuffix("__waitAllWaitLock__") == false {
+                print("WARNING: AsyncAwaitSemaphore.deinit: Lock named \(name) was still acquired when deinit ran.")
+            }
             prematureReleaseLockIDs.insert(acquiredLockID!)
             acquiredLockID = nil
         }
@@ -96,32 +103,35 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     // Same as deinit, except it can be called purposefully.
     private var disposed = false
     public func dispose() async {
+        await disposeInternal(suppressLockedWarning: false)
+    }
+    internal func disposeInternal(suppressLockedWarning: Bool) async {
         if continuationsAndLockIDsFIFO.count > 0 {
-            print("WARNING: AsyncAwaitSemaphore named \(name) unlocked inside dispose().")
+            print("WARNING: AsyncAwaitSemaphore.dispose(): Lock named \(name) waiting continuations resumed by throwing .disposed error.")
         }
         
-        failNewAcquires()
-        failAllInner(
-            error: LockError.disposed(
-                name: name,
-                wasAcquiredAt: debugLockIDToSourceLocation[acquiredLockID ?? Self.undefinedLockID]
-            ),
-            onlyWaiting: false
-        )
+        let continuations = continuationsAndLockIDsFIFO
+        continuationsAndLockIDsFIFO.removeAll()
         
+        for (continuation, _, timeoutTask, _) in continuations {
+            timeoutTask?.cancel()
+            continuation.resume(throwing: LockError.disposed(name: name, wasAcquiredAt: debugLockIDToSourceLocation[acquiredLockID ?? Self.undefinedLockID]))
+        }
         
-        await waitAllWaitLock?.failAllInner(
-            error: LockError.disposed(
-                name: name,
-                wasAcquiredAt: debugLockIDToSourceLocation[acquiredLockID ?? Self.undefinedLockID]
-            ),
-            onlyWaiting: false
-        )
-        await waitAllWaitLock?.dispose()
+        debugLockIDToSourceLocation.removeAll()
+        
+        // .release() for the acquired lock will be reached and will not throw.
+        // However what will happen is unknown since deinit ran somehow (weak reference?).
+        if acquiredLockID != nil {
+            if suppressLockedWarning == false {
+                print("WARNING: AsyncAwaitSemaphore.dispose(): Lock named \(name) was still acquired when dispose() ran.")
+            }
+            prematureReleaseLockIDs.insert(acquiredLockID!)
+            acquiredLockID = nil
+        }
+        
+        await waitAllWaitLock?.disposeInternal(suppressLockedWarning: true)
         waitAllWaitLock = nil
-        
-        
-        disposed = true
     }
     
     
@@ -388,9 +398,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
             self.acquiredLockID = nil
             debugLockIDToSourceLocation.removeAll(keepingCapacity: true)
             
-            if waitAllLockID != nil {
-                try! await waitAllWaitLock!.release(acquiredLockID: waitAllLockID!, ignoreRepeatRelease: true)
-            }
+            await waitAllWaitLock?.resumeAllWaiting()
         }
     }
     
@@ -415,16 +423,9 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     }
     
     
-    private var waitAllWaitLock: AsyncAwaitLock? = nil
-    private var waitAllLockID: LockID? = nil
-    public func waitAll() async throws {
+    public func waitAll(timeout: TimeInterval? = nil) async throws {
         if disposed {
-            fatalError("Attempted to waitAll() on disposed() lock named \(name)")
-        }
-        
-        let waitAllLockName = "__waitAllWaitLock__"
-        if name == waitAllLockName {
-            fatalError("\(waitAllLockName) is a reserved name.")
+            throw LockError.disposed(name: name)
         }
         
         if isAcquired == false {
@@ -433,35 +434,32 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         }
         
         if waitAllWaitLock == nil {
-            waitAllWaitLock = AsyncAwaitLock(name: waitAllLockName)
-        }
-        let waitAllWaitLock = waitAllWaitLock!
-        waitAllLockID = try await waitAllWaitLock.acquireNonWaiting()
-        
-        
-        let waitAllLockIDWait: LockID
-        do {
-            waitAllLockIDWait = try await waitAllWaitLock.acquire()
-        }
-        catch {
-            switch error as! LockError {
-            case .disposed: return
-            case .expresslyFailed: return
-            case .acquiredElsewhere: fatalError(error.localizedDescription)
-            case .notAcquired: fatalError(error.localizedDescription)
-            case .prevented: fatalError(error.localizedDescription)
-            case .timedOutWaiting: fatalError(error.localizedDescription)
-            case .replaced: fatalError(error.localizedDescription)
-            }
+            waitAllWaitLock = AsyncAwaitLock(name: "\(name)__waitAllWaitLock__")
+            let _ = try await waitAllWaitLock!.acquireNonWaiting()
         }
         
-        waitAllLockID = nil
-        try! await waitAllWaitLock.release(acquiredLockID: waitAllLockIDWait)
-        
+        let _ = try await waitAllWaitLock!.acquire(timeout: timeout)
     }
     
     
-    private func failAllInner(error: LockError, onlyWaiting: Bool) {
+    internal func resumeAllWaiting() {
+        let continuations = continuationsAndLockIDsFIFO
+        continuationsAndLockIDsFIFO.removeAll(keepingCapacity: true)
+        debugLockIDToSourceLocation.removeAll(keepingCapacity: true)
+        
+        for (continuation, _, timeoutTask, _) in continuations {
+            timeoutTask?.cancel()
+            continuation.resume()
+        }
+    }
+    
+    
+    internal func failAllInner(error: LockError, onlyWaiting: Bool) async {
+        await waitAllWaitLock?.failAllInner(error: error, onlyWaiting: onlyWaiting)
+        if onlyWaiting == false {
+            waitAllWaitLock = nil
+        }
+        
         let continuations = continuationsAndLockIDsFIFO
         continuationsAndLockIDsFIFO.removeAll(keepingCapacity: true)
         debugLockIDToSourceLocation.removeAll(keepingCapacity: true)
@@ -479,16 +477,10 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     }
     
     public func failAll(onlyWaiting: Bool = false) async throws {
-        failAllInner(error: LockError.expresslyFailed(lock: self, methodName: .failAll), onlyWaiting: onlyWaiting)
+        await failAllInner(error: LockError.expresslyFailed(lock: self, methodName: .failAll), onlyWaiting: onlyWaiting)
         
         if disposed == true {
             return
-        }
-        
-        if waitAllLockID != nil {
-            let waitAllLockIDCopy = waitAllLockID!
-            waitAllLockID = nil
-            try! await waitAllWaitLock!.release(acquiredLockID: waitAllLockIDCopy, ignoreRepeatRelease: true)
         }
     }
     

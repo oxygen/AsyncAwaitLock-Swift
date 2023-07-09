@@ -17,11 +17,15 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
         }
     }
     
+    public enum FailedBy: String {
+        case failAll
+    }
+    
     public enum LockError: Error {
         case disposed(name: String, wasAcquiredAt: SourceLocation? = nil)
         case notAcquired(lock: AsyncAwaitLockMainActor)
         case prevented(lock: AsyncAwaitLockMainActor)
-        case expresslyFailed(lock: AsyncAwaitLockMainActor, methodName: String)
+        case expresslyFailed(lock: AsyncAwaitLockMainActor, methodName: FailedBy)
         case timedOutWaiting(lock: AsyncAwaitLockMainActor, timeout: TimeInterval, acquiredAt: SourceLocation? = nil)
         case acquiredElsewhere(lock: AsyncAwaitLockMainActor, acquiredAt: SourceLocation? = nil)
         case replaced(lock: AsyncAwaitLockMainActor, by: SourceLocation? = nil)
@@ -468,7 +472,7 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
     
     
     public func failAll(onlyWaiting: Bool = false) throws {
-        failAllInner(error: LockError.expresslyFailed(lock: self, methodName: #function), onlyWaiting: onlyWaiting)
+        failAllInner(error: LockError.expresslyFailed(lock: self, methodName: .failAll), onlyWaiting: onlyWaiting)
         
         if disposed == true {
             return

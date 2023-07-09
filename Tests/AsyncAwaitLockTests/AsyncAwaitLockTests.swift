@@ -14,7 +14,7 @@ final class AsyncAwaitLockTests: XCTestCase {
             
             let lockID: AsyncAwaitLock.LockID
             do {
-                lockID = try await lock.acquire(file: #filePath, line: #line)
+                lockID = try await lock.acquire((#filePath, #line, Date()))
                 print("Acquired lock O")
             }
             catch {
@@ -36,7 +36,7 @@ final class AsyncAwaitLockTests: XCTestCase {
             
             let lockID: AsyncAwaitLock.LockID
             do {
-                lockID = try await lock.acquire(file: #filePath, line: #line)
+                lockID = try await lock.acquire((#filePath, #line, Date()))
                 print("Acquired lock A")
             }
             catch {
@@ -59,7 +59,7 @@ final class AsyncAwaitLockTests: XCTestCase {
             print("Acquiring blocking lock B")
             let lockID: AsyncAwaitLock.LockID
             do {
-                lockID = try await lock.acquire(file: #filePath, line: #line)
+                lockID = try await lock.acquire((#filePath, #line, Date()))
                 print("Acquired lock B")
             }
             catch {
@@ -82,7 +82,7 @@ final class AsyncAwaitLockTests: XCTestCase {
             print("Acquiring blocking lock C")
             let lockID: AsyncAwaitLock.LockID
             do {
-                lockID = try await lock.acquire(replaceWaiting: true, file: #filePath, line: #line)
+                lockID = try await lock.acquire(replaceWaiting: true, (#filePath, #line, Date()))
                 print("Acquired lock C")
             }
             catch {
@@ -111,7 +111,7 @@ final class AsyncAwaitLockTests: XCTestCase {
             print("Acquiring blocking lock D")
             let lockID: AsyncAwaitLockMainActor.LockID
             do {
-                lockID = try await lock.acquire(file: #filePath, line: #line)
+                lockID = try await lock.acquire((#filePath, #line, Date()))
                 print("Acquired lock D")
             }
             catch {
@@ -130,7 +130,7 @@ final class AsyncAwaitLockTests: XCTestCase {
             print("Acquiring blocking lock T with timeout")
             
             do {
-                let _ = try await lock.acquire(timeout: 0.01, file: #filePath, line: #line)
+                let _ = try await lock.acquire(timeout: 0.01, (#filePath, #line, Date()))
                 assert(false)
             }
             catch {
@@ -149,7 +149,7 @@ final class AsyncAwaitLockTests: XCTestCase {
             try! await Task.sleep(nanoseconds: 1_000_000_000)
             
             do {
-                let _ = try await lock.acquireNonWaiting(file: #filePath, line: #line)
+                let _ = try await lock.acquireNonWaiting((#filePath, #line, Date()))
                 assert(false)
             }
             catch {
@@ -177,7 +177,7 @@ final class AsyncAwaitLockTests: XCTestCase {
             
             let lockID: AsyncAwaitLock.LockID
             do {
-                lockID = try await lock.acquire(file: #filePath, line: #line)
+                lockID = try await lock.acquire((#filePath, #line, Date()))
                 print("Acquired lock O")
             }
             catch {
@@ -201,7 +201,7 @@ final class AsyncAwaitLockTests: XCTestCase {
             
             let lockID: AsyncAwaitLock.LockID
             do {
-                lockID = try await lock.acquire(file: #filePath, line: #line)
+                lockID = try await lock.acquire((#filePath, #line, Date()))
                 print("Acquired lock A")
             }
             catch {

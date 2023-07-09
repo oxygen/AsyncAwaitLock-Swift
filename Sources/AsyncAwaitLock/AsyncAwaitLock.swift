@@ -4,14 +4,26 @@ import Foundation
 public actor AsyncAwaitLock: CustomStringConvertible {
     public typealias LockID = UInt64
     
+    public struct SourceLocation {
+        let file: String
+        let line: Int
+        let time: Date
+        
+        public init(file: String, line: Int, time: Date = Date()) {
+            self.file = file
+            self.line = line
+            self.time = time
+        }
+    }
+    
     public enum LockError: Error {
-        case disposed(name: String, acquiredLockID: LockID? = nil, (file: String, line: Int)? = nil)
+        case disposed(name: String, wasAcquiredAt: SourceLocation? = nil)
         case notAcquired(lock: AsyncAwaitLock)
         case prevented(lock: AsyncAwaitLock)
         case expresslyFailed(lock: AsyncAwaitLock, methodName: String)
-        case timedOutWaiting(lock: AsyncAwaitLock, timeout: TimeInterval)
-        case acquiredElsewhere(lock: AsyncAwaitLock, (file: String, line: Int)? = nil)
-        case replaced(lock: AsyncAwaitLock, (file: String, line: Int)? = nil)
+        case timedOutWaiting(lock: AsyncAwaitLock, timeout: TimeInterval, acquiredAt: SourceLocation? = nil)
+        case acquiredElsewhere(lock: AsyncAwaitLock, acquiredAt: SourceLocation? = nil)
+        case replaced(lock: AsyncAwaitLock, by: SourceLocation? = nil)
     }
     
     public enum OnReplaced {
@@ -48,7 +60,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         onReplaced: OnReplaced
     )] = []
     private var prematureReleaseLockIDs: Set<LockID> = []
-    private var debugLockIDToFileAndLine: Dictionary<LockID, (file: String, line: Int)> = [:]
+    private var debugLockIDToSourceLocation: Dictionary<LockID, SourceLocation> = [:]
     
     // From Apple’s docs: The checked continuation offers detection of mis-use,
     // and dropping the last reference to it,
@@ -64,10 +76,10 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         
         for (continuation, _, timeoutTask, _) in continuations {
             timeoutTask?.cancel()
-            continuation.resume(throwing: LockError.disposed(name: name, acquiredLockID: acquiredLockID, debugLockIDToFileAndLine[acquiredLockID ?? Self.undefinedLockID]))
+            continuation.resume(throwing: LockError.disposed(name: name, wasAcquiredAt: debugLockIDToSourceLocation[acquiredLockID ?? Self.undefinedLockID]))
         }
         
-        debugLockIDToFileAndLine.removeAll()
+        debugLockIDToSourceLocation.removeAll()
         
         // .release() for the acquired lock will be reached and will not throw.
         if acquiredLockID != nil {
@@ -85,10 +97,22 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         }
         
         failNewAcquires()
-        failAllInner(error: LockError.disposed(name: name, acquiredLockID: acquiredLockID, debugLockIDToFileAndLine[acquiredLockID ?? Self.undefinedLockID]), onlyWaiting: false)
+        failAllInner(
+            error: LockError.disposed(
+                name: name,
+                wasAcquiredAt: debugLockIDToSourceLocation[acquiredLockID ?? Self.undefinedLockID]
+            ),
+            onlyWaiting: false
+        )
         
         
-        await waitAllWaitLock?.failAllInner(error: LockError.disposed(name: name, acquiredLockID: acquiredLockID, debugLockIDToFileAndLine[acquiredLockID ?? Self.undefinedLockID]), onlyWaiting: false)
+        await waitAllWaitLock?.failAllInner(
+            error: LockError.disposed(
+                name: name,
+                wasAcquiredAt: debugLockIDToSourceLocation[acquiredLockID ?? Self.undefinedLockID]
+            ),
+            onlyWaiting: false
+        )
         await waitAllWaitLock?.dispose()
         waitAllWaitLock = nil
         
@@ -102,22 +126,51 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     }
     
     
-    public func acquireNonWaiting(file: String? = nil, line: Int? = nil) async throws -> LockID {
-        if isAcquired {
-            throw LockError.acquiredElsewhere(lock: self, debugLockIDToFileAndLine[acquiredLockID!])
-        }
-        
-        return try await acquire(file: file, line: line)
+    
+    public func acquireNonWaiting() async throws -> LockID {
+        return try await acquireNonWaiting(nil)
     }
     
+    public func acquireNonWaiting(_ sourceLocation: (String, Int, Date)) async throws -> LockID {
+        return try await acquireNonWaiting(SourceLocation(file: sourceLocation.0, line: sourceLocation.1, time: sourceLocation.2))
+    }
+    
+    public func acquireNonWaiting(_ sourceLocation: SourceLocation? = nil) async throws -> LockID {
+        if isAcquired {
+            throw LockError.acquiredElsewhere(lock: self, acquiredAt: debugLockIDToSourceLocation[acquiredLockID!])
+        }
+        
+        return try await acquire(sourceLocation)
+    }
+    
+    
+    
+    public func acquire() async throws -> LockID {
+        return try await acquire(nil)
+    }
     
     public func acquire(
         timeout: TimeInterval? = nil,
         replaceWaiting: Bool = false,
         onReplaced: OnReplaced = .throwReplaced,
         onTimeout: OnTimeout = .throwTimedOutWaiting,
-        file: String? = nil,
-        line: Int? = nil
+        _ sourceLocation: (String, Int, Date)
+    ) async throws -> LockID {
+        return try await acquire(
+            timeout: timeout,
+            replaceWaiting: replaceWaiting,
+            onReplaced: onReplaced,
+            onTimeout: onTimeout,
+            SourceLocation(file: sourceLocation.0, line: sourceLocation.1, time: sourceLocation.2)
+        )
+    }
+    
+    public func acquire(
+        timeout: TimeInterval? = nil,
+        replaceWaiting: Bool = false,
+        onReplaced: OnReplaced = .throwReplaced,
+        onTimeout: OnTimeout = .throwTimedOutWaiting,
+        _ sourceLocation: SourceLocation? = nil
     ) async throws -> LockID {
         var resetTimeout: Bool
         
@@ -153,7 +206,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
                         
                         for (continuation, _, timeoutTask, _) in continuationsOther {
                             timeoutTask?.cancel()
-                            continuation.resume(throwing: LockError.replaced(lock: self, debugLockIDToFileAndLine[lockID]))
+                            continuation.resume(throwing: LockError.replaced(lock: self, by: debugLockIDToSourceLocation[lockID]))
                         }
                     }
                     
@@ -189,8 +242,8 @@ public actor AsyncAwaitLock: CustomStringConvertible {
                     acquiredLockID = lockID
                 }
                 
-                if file != nil || line != nil {
-                    debugLockIDToFileAndLine[acquiredLockID!] = (file: file ?? "", line: line ?? -1)
+                if sourceLocation != nil {
+                    debugLockIDToSourceLocation[acquiredLockID!] = sourceLocation
                 }
                 
                 return acquiredLockID!
@@ -307,7 +360,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         // if acquiredLockID != nil {
         if self.acquiredLockID != acquiredLockID {
             if ignoreRepeatRelease == false {
-                throw LockError.acquiredElsewhere(lock: self, debugLockIDToFileAndLine[self.acquiredLockID!])
+                throw LockError.acquiredElsewhere(lock: self, acquiredAt: debugLockIDToSourceLocation[self.acquiredLockID!])
             }
             else {
                 isAlreadyReleased = true
@@ -322,14 +375,14 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         
         if continuationsAndLockIDsFIFO.count > 0 {
             let (continuation, lockIDRemoved, timeoutTask, _) = continuationsAndLockIDsFIFO.removeFirst()
-            debugLockIDToFileAndLine.removeValue(forKey: lockIDRemoved)
+            debugLockIDToSourceLocation.removeValue(forKey: lockIDRemoved)
             timeoutTask?.cancel()
             
             continuation.resume()
         }
         else {
             self.acquiredLockID = nil
-            debugLockIDToFileAndLine.removeAll(keepingCapacity: true)
+            debugLockIDToSourceLocation.removeAll(keepingCapacity: true)
             
             if waitAllLockID != nil {
                 try! await waitAllWaitLock!.release(acquiredLockID: waitAllLockID!, ignoreRepeatRelease: true)
@@ -338,12 +391,12 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     }
     
     
-    public func whereAcquired() throws -> (file: String, line: Int)? {
+    public func whereAcquired() throws -> SourceLocation? {
         if isAcquired == false {
             throw LockError.notAcquired(lock: self)
         }
         
-        return debugLockIDToFileAndLine[self.acquiredLockID!]
+        return debugLockIDToSourceLocation[self.acquiredLockID!]
     }
     
     
@@ -407,7 +460,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     private func failAllInner(error: LockError, onlyWaiting: Bool) {
         let continuations = continuationsAndLockIDsFIFO
         continuationsAndLockIDsFIFO.removeAll(keepingCapacity: true)
-        debugLockIDToFileAndLine.removeAll(keepingCapacity: true)
+        debugLockIDToSourceLocation.removeAll(keepingCapacity: true)
         
         for (continuation, _, timeoutTask, _) in continuations {
             timeoutTask?.cancel()
@@ -438,10 +491,10 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     
     public func checkReleased() throws {
         if isAcquired {
-            throw LockError.acquiredElsewhere(lock: self, debugLockIDToFileAndLine[self.acquiredLockID!])
+            throw LockError.acquiredElsewhere(lock: self, acquiredAt: debugLockIDToSourceLocation[self.acquiredLockID!])
         }
         
         assert(continuationsAndLockIDsFIFO.isEmpty)
-        assert(debugLockIDToFileAndLine.isEmpty)
+        assert(debugLockIDToSourceLocation.isEmpty)
     }
 }

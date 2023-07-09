@@ -418,7 +418,7 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
     }
     
     
-    public func waitAll(timeout: TimeInterval? = nil) async throws {
+    public func waitAll(timeout: TimeInterval? = nil, onTimeout: OnTimeout = .throwTimedOutWaiting) async throws {
         if disposed {
             throw LockError.disposed(name: name)
         }
@@ -433,7 +433,7 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
             let _ = try await waitAllWaitLock!.acquireNonWaiting()
         }
         
-        let _ = try await waitAllWaitLock!.acquire(timeout: timeout)
+        let _ = try await waitAllWaitLock!.acquire(timeout: timeout, onTimeout: onTimeout)
     }
     
     

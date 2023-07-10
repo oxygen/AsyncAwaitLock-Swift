@@ -479,9 +479,9 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     public func failAll(onlyWaiting: Bool = false) async throws {
         await failAllInner(error: LockError.expresslyFailed(lock: self, methodName: .failAll), onlyWaiting: onlyWaiting)
         
-        if disposed == true {
-            return
-        }
+        // if disposed == true {
+            // return
+        // }
     }
     
     

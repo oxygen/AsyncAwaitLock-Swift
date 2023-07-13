@@ -230,7 +230,13 @@ public class AsyncAwaitLockMainActor: CustomStringConvertible {
                         
                         if timeout != nil {
                             sleepTask = Task { [self] in
-                                try! await Task.sleep(nanoseconds: UInt64(1_000_000_000 * timeout!))
+                                do {
+                                    try await Task.sleep(nanoseconds: UInt64(1_000_000_000 * timeout!))
+                                }
+                                catch {
+                                    // Only CancellationError is thrown here.
+                                    return
+                                }
                                 
                                 let index = continuationsAndLockIDsFIFO.firstIndex(where: { $0.lockID == lockID })
                                 if index != nil {

@@ -439,6 +439,9 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         }
         
         let _ = try await waitAllWaitLock!.acquire(timeout: timeout, onTimeout: onTimeout)
+
+        // See how resumeAllWaiting() doesn't store the prematurely released lock IDs,
+        // as it is only used to undo this function, .waitAll()
     }
     
     

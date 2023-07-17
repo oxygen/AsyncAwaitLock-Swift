@@ -489,6 +489,9 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         }
         
         let _ = try await waitAllWaitLock!.acquire(timeout: timeout, onTimeout: onTimeout)
+
+        // See how resumeAllWaiting() doesn't store the prematurely released lock IDs,
+        // as it is only used to undo this function, .waitAll()
     }
     
     
@@ -529,9 +532,9 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     public func failAll(onlyWaiting: Bool = false) async throws {
         await failAllInner(error: LockError.expresslyFailed(lock: self, methodName: .failAll), onlyWaiting: onlyWaiting)
         
-        if disposed == true {
-            return
-        }
+        // if disposed == true {
+            // return
+        // }
     }
     
     

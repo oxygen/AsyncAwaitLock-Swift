@@ -206,11 +206,6 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         onTimeout: OnTimeout = .throwTimedOutWaiting,
         _ sourceLocation: SourceLocation? = nil
     ) async throws -> LockID {
-        // Reusing the sleep task to detect task cancellation.
-        let timeout = timeout ?? TimeInterval.greatestFiniteMagnitude
-        
-        
-        
         if disposed {
             fatalError("Attempted to lock disposed() lock named \(name)")
         }
@@ -249,64 +244,81 @@ public actor AsyncAwaitLock: CustomStringConvertible {
                 }
             }
             
-            try await withCheckedThrowingContinuation { [self] (continuation: CheckedContinuation<Void, Error>) in
-                let sleepTask: Task<Void, Never> = Task { [self] in
-                    let cancellationError: CancellationError?
-                    do {
-                        if timeout == TimeInterval.greatestFiniteMagnitude {
-                            try await Task.sleep(nanoseconds: 1_000_000_000 * 200 * 365 * 86400)
-                            fatalError("200 years have passed most unexpectedly.")
+            try await withTaskCancellationHandler(
+                operation: {
+                    try await withCheckedThrowingContinuation { [self] (continuation: CheckedContinuation<Void, Error>) in
+                        let sleepTask: Task<Void, Never>?
+                        
+                        if timeout == nil {
+                            sleepTask = nil
                         }
                         else {
-                            try await Task.sleep(nanoseconds: UInt64(1_000_000_000 * timeout))
+                            // When running under macCatalyst on x86_64 (didn't try ARM)
+                            // "try await Task.sleep()" (running inside let sleepTask: Task{}) is cancelled when a StoreKit2 .purchase() dialog is shown (or the success dialog, one of them).
+                            // The StoreKit2 modal alerts are not parented by the app, however the app is suspended while they are shown.
+                            // This cancellation triggered by .purchase() system modal dialogs does not happen in the iOS simulator, Swift Playgrounds or on iOS devices.
+                            sleepTask = Task { [self] in
+                                do {
+                                    try await Task.sleep(nanoseconds: UInt64(1_000_000_000 * timeout!))
+                                    
+                                    if let index = continuationsAndLockIDsFIFO.firstIndex(where: { $0.lockID == lockID }) {
+                                        continuationsAndLockIDsFIFO.remove(at: index)
+                                        
+                                        switch onTimeout {
+                                            
+                                        case .resume:
+                                            prematureReleaseLockIDs.insert(lockID)
+                                            continuation.resume()
+                                        
+                                        case .throwTimedOutWaiting:
+                                            continuation.resume(
+                                                throwing: LockError.timedOutWaiting(
+                                                    lock: self,
+                                                    timeout: timeout!,
+                                                    acquiredAt: debugLockIDToSourceLocation[acquiredLockID ?? Self.undefinedLockID]
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                                catch {
+                                    let cancellationError = error as? CancellationError
+                                    
+                                    if cancellationError == nil {
+                                        assert(cancellationError != nil, "Task.sleep() now throws more stuff, please handle with additional casts.")
+                                        print("ERROR: try Task.sleep(): error as? CancellationError failed unexpectedly \(#filePath) \(#line).")
+                                    }
+                                    
+                                    if let index = continuationsAndLockIDsFIFO.firstIndex(where: { $0.lockID == lockID }) {
+                                        continuationsAndLockIDsFIFO.remove(at: index)
+                                        
+                                        continuation.resume(
+                                            throwing: LockError.taskCancelled(
+                                                lock: self,
+                                                error: cancellationError ?? CancellationError()
+                                            )
+                                        )
+                                    }
+                                }
+                            } // End sleepTask
                         }
                         
-                        cancellationError = nil
-                    }
-                    catch {
-                        cancellationError = error as? CancellationError
+                        continuationsAndLockIDsFIFO.append((
+                            continuation: continuation,
+                            lockID: lockID,
+                            timeoutTask: sleepTask,
+                            onReplaced: onReplaced
+                        ))
                     }
                     
-                    let index = continuationsAndLockIDsFIFO.firstIndex(where: { $0.lockID == lockID })
-                    if index != nil {
-                        continuationsAndLockIDsFIFO.remove(at: index!)
-                        
-                        if cancellationError != nil {
-                            continuation.resume(
-                                throwing: LockError.taskCancelled(
-                                    lock: self,
-                                    error: cancellationError!
-                                )
-                            )
-                        }
-                        else {
-                            switch onTimeout {
-                                
-                            case .resume:
-                                prematureReleaseLockIDs.insert(lockID)
-                                continuation.resume()
-                                
-                            case .throwTimedOutWaiting:
-                                continuation.resume(
-                                    throwing: LockError.timedOutWaiting(
-                                        lock: self,
-                                        timeout: timeout,
-                                        acquiredAt: debugLockIDToSourceLocation[acquiredLockID ?? Self.undefinedLockID]
-                                    )
-                                )
-                            }
-                        }
+                },
+                
+                onCancel: {
+                    Task {
+                        await self.onTaskCancelledLockID(lockID: lockID)
                     }
                 }
-                
-                
-                continuationsAndLockIDsFIFO.append((
-                    continuation: continuation,
-                    lockID: lockID,
-                    timeoutTask: sleepTask,
-                    onReplaced: onReplaced
-                ))
-            }
+            )
             
             acquiredLockID = lockID
         }
@@ -478,5 +490,22 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         
         assert(continuationsAndLockIDsFIFO.isEmpty)
         assert(debugLockIDToSourceLocation.isEmpty)
+    }
+    
+    
+    private func onTaskCancelledLockID(lockID: LockID) {
+        if let index = continuationsAndLockIDsFIFO.firstIndex(where: { $0.lockID == lockID }) {
+            let lockItem = continuationsAndLockIDsFIFO[index]
+            continuationsAndLockIDsFIFO.remove(at: index)
+            
+            lockItem.timeoutTask?.cancel()
+            
+            lockItem.continuation.resume(
+                throwing: LockError.taskCancelled(
+                    lock: self,
+                    error: CancellationError()
+                )
+            )
+        }
     }
 }

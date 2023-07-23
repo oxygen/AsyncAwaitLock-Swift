@@ -134,7 +134,7 @@ final class AsyncAwaitLockTests: XCTestCase {
             }
             catch {
                 switch error as! AsyncAwaitLock.LockError {
-                case .timedOutWaiting:
+                case .timedOut:
                     print("Lock T timed out as expected.")
                     return
                 default:
@@ -160,7 +160,7 @@ final class AsyncAwaitLockTests: XCTestCase {
         try! await lock.waitAll()
         
         // Lock D is acquired delayed.
-        await lock.failNewAcquires()
+        await lock.disable()
         try! await lock.waitAll()
         
         try! await lock.checkReleased()
@@ -221,7 +221,7 @@ final class AsyncAwaitLockTests: XCTestCase {
         }
         try! await Task.sleep(nanoseconds: 500_000_000)
         print("Failling all waiting locks.")
-        await lock.failNewAcquires()
+        await lock.disable()
         try! await lock.failAll()
         try! await lock.checkReleased()
         Task {

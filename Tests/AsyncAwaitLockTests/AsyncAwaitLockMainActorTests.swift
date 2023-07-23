@@ -136,7 +136,7 @@ final class AsyncAwaitLockMainActorTests: XCTestCase {
             }
             catch {
                 switch error as! AsyncAwaitLockMainActor.LockError {
-                case .timedOutWaiting:
+                case .timedOut:
                     print("Lock T timed out as expected.")
                     return
                 default:
@@ -162,7 +162,7 @@ final class AsyncAwaitLockMainActorTests: XCTestCase {
         try! await lock.waitAll()
         
         // Lock D is acquired delayed.
-        lock.failNewAcquires()
+        lock.disable()
         try! await lock.waitAll()
         
         try! lock.checkReleased()
@@ -223,7 +223,7 @@ final class AsyncAwaitLockMainActorTests: XCTestCase {
         }
         try! await Task.sleep(nanoseconds: 500_000_000)
         print("Failling all waiting locks.")
-        lock.failNewAcquires()
+        lock.disable()
         try! lock.failAll()
         try! lock.checkReleased()
         lock.dispose()

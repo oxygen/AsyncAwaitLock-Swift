@@ -16,36 +16,24 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         }
     }
     
-    public enum FailedBy: String {
-        case failAll
-    }
-    
     public enum LockError: Error {
-        case disposed(name: String, wasAcquiredAt: SourceLocation? = nil)
-        case notAcquired(lock: AsyncAwaitLock)
-        case prevented(lock: AsyncAwaitLock)
-        case expresslyFailed(lock: AsyncAwaitLock, methodName: FailedBy)
-        case timedOutWaiting(lock: AsyncAwaitLock, timeout: TimeInterval, acquiredAt: SourceLocation? = nil)
-        case acquiredElsewhere(lock: AsyncAwaitLock, acquiredAt: SourceLocation? = nil)
-        case replaced(lock: AsyncAwaitLock, by: SourceLocation? = nil)
-        case taskCancelled(lock: AsyncAwaitLock, error: CancellationError)
+        case notAcquired
+        case disabled
+        case timedOut
+        case isAcquired
+        case replaced
+        case cancelled
     }
     
     public enum OnReplaced {
-        case keepWaiting
         case resume
+        case keepWaiting
         case throwReplaced
     }
     
     public enum OnTimeout {
         case resume
-        case throwTimedOutWaiting
-    }
-    
-    public enum SourceLocationDebuggingMode {
-        case enabledIfDebuggerPresent
-        case enabled
-        case disabled
+        case throwTimedOut
     }
     
     public nonisolated let name: String
@@ -62,7 +50,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     static private let undefinedLockID: LockID = 0
     private var lockID: LockID = 0
     
-    private var preventNewAcquires: Bool = false
+    private(set) var disabled: Bool = false
     private var continuationsAndLockIDsFIFO: [(
         continuation: CheckedContinuation<Void, any Error>,
         lockID: LockID,
@@ -70,7 +58,6 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         onReplaced: OnReplaced
     )] = []
     private var prematureReleaseLockIDs: Set<LockID> = []
-    private var enableSourceLocationDebugging: Bool
     private var debugLockIDToSourceLocation: Dictionary<LockID, SourceLocation> = [:]
     
     private var waitAllWaitLock: AsyncAwaitLock? = nil
@@ -90,7 +77,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         
         for (continuation, _, timeoutTask, _) in continuations {
             timeoutTask?.cancel()
-            continuation.resume(throwing: LockError.disposed(name: name, wasAcquiredAt: debugLockIDToSourceLocation[acquiredLockID ?? Self.undefinedLockID]))
+            continuation.resume(throwing: LockError.disabled)
         }
         
         debugLockIDToSourceLocation.removeAll()
@@ -122,7 +109,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         
         for (continuation, _, timeoutTask, _) in continuations {
             timeoutTask?.cancel()
-            continuation.resume(throwing: LockError.disposed(name: name, wasAcquiredAt: debugLockIDToSourceLocation[acquiredLockID ?? Self.undefinedLockID]))
+            continuation.resume(throwing: LockError.disabled)
         }
         
         debugLockIDToSourceLocation.removeAll()
@@ -142,21 +129,8 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     }
     
     
-    public init(name: String, enableSourceLocationDebugging: SourceLocationDebuggingMode = .disabled) {
+    public init(name: String) {
         self.name = name
-        
-        switch enableSourceLocationDebugging {
-        case .enabledIfDebuggerPresent:
-#if DEBUG
-            self.enableSourceLocationDebugging = true
-#else
-            self.enableSourceLocationDebugging = false
-#endif
-        case .enabled:
-            self.enableSourceLocationDebugging = true
-        case .disabled:
-            self.enableSourceLocationDebugging = false
-        }
     }
     
     
@@ -171,7 +145,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     
     public func acquireNonWaiting(_ sourceLocation: SourceLocation? = nil) async throws -> LockID {
         if isAcquired {
-            throw LockError.acquiredElsewhere(lock: self, acquiredAt: debugLockIDToSourceLocation[acquiredLockID!])
+            throw LockError.isAcquired
         }
         
         return try await acquire(sourceLocation)
@@ -187,7 +161,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         timeout: TimeInterval? = nil,
         replaceWaiting: Bool = false,
         onReplaced: OnReplaced = .throwReplaced,
-        onTimeout: OnTimeout = .throwTimedOutWaiting,
+        onTimeout: OnTimeout = .throwTimedOut,
         _ sourceLocation: (String, Int, Date)
     ) async throws -> LockID {
         return try await acquire(
@@ -203,15 +177,15 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         timeout: TimeInterval? = nil,
         replaceWaiting: Bool = false,
         onReplaced: OnReplaced = .throwReplaced,
-        onTimeout: OnTimeout = .throwTimedOutWaiting,
+        onTimeout: OnTimeout = .throwTimedOut,
         _ sourceLocation: SourceLocation? = nil
     ) async throws -> LockID {
         if disposed {
             fatalError("Attempted to lock disposed() lock named \(name)")
         }
         
-        if preventNewAcquires {
-            throw LockError.prevented(lock: self)
+        if disabled {
+            throw LockError.disabled
         }
         
         lockID += 1
@@ -239,7 +213,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
                     case .resume:
                         prematureReleaseLockIDs.insert(replacedLockID)
                         continuation.resume()
-                    case .throwReplaced: continuation.resume(throwing: LockError.replaced(lock: self, by: debugLockIDToSourceLocation[lockID]))
+                    case .throwReplaced: continuation.resume(throwing: LockError.replaced)
                     }
                 }
             }
@@ -270,13 +244,9 @@ public actor AsyncAwaitLock: CustomStringConvertible {
                                             prematureReleaseLockIDs.insert(lockID)
                                             continuation.resume()
                                         
-                                        case .throwTimedOutWaiting:
+                                        case .throwTimedOut:
                                             continuation.resume(
-                                                throwing: LockError.timedOutWaiting(
-                                                    lock: self,
-                                                    timeout: timeout!,
-                                                    acquiredAt: debugLockIDToSourceLocation[acquiredLockID ?? Self.undefinedLockID]
-                                                )
+                                                throwing: LockError.timedOut
                                             )
                                         }
                                     }
@@ -293,10 +263,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
                                         continuationsAndLockIDsFIFO.remove(at: index)
                                         
                                         continuation.resume(
-                                            throwing: LockError.taskCancelled(
-                                                lock: self,
-                                                error: cancellationError ?? CancellationError()
-                                            )
+                                            throwing: LockError.cancelled
                                         )
                                     }
                                 }
@@ -310,7 +277,6 @@ public actor AsyncAwaitLock: CustomStringConvertible {
                             onReplaced: onReplaced
                         ))
                     }
-                    
                 },
                 
                 onCancel: {
@@ -323,7 +289,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
             acquiredLockID = lockID
         }
         
-        if enableSourceLocationDebugging && sourceLocation != nil {
+        if sourceLocation != nil {
             debugLockIDToSourceLocation[acquiredLockID!] = sourceLocation
         }
         
@@ -334,7 +300,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     public func wait(
         timeout: TimeInterval? = nil,
         onReplaced: OnReplaced = .keepWaiting,
-        onTimeout: OnTimeout = .throwTimedOutWaiting
+        onTimeout: OnTimeout = .throwTimedOut
     ) async throws {
         if isAcquired {
             let lockID = try await acquire(
@@ -359,7 +325,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         var isAlreadyReleased = false
         if isAcquired == false {
             if ignoreRepeatRelease == false {
-                throw LockError.notAcquired(lock: self)
+                throw LockError.notAcquired
             }
             else {
                 isAlreadyReleased = true
@@ -369,7 +335,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
         // if acquiredLockID != nil {
         if self.acquiredLockID != acquiredLockID {
             if ignoreRepeatRelease == false {
-                throw LockError.acquiredElsewhere(lock: self, acquiredAt: debugLockIDToSourceLocation[self.acquiredLockID!])
+                throw LockError.isAcquired
             }
             else {
                 isAlreadyReleased = true
@@ -400,27 +366,29 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     
     public func whereAcquired() throws -> SourceLocation? {
         if isAcquired == false {
-            throw LockError.notAcquired(lock: self)
+            throw LockError.notAcquired
         }
         
         return debugLockIDToSourceLocation[self.acquiredLockID!]
     }
     
     
-    public func failNewAcquires() {
-        preventNewAcquires = true
+    public func disable() {
+        disabled = true
     }
     
-    public func allowNewAcquires() {
-        assert(disposed == false)
-        
-        preventNewAcquires = false
-    }
-    
-    
-    public func waitAll(timeout: TimeInterval? = nil, onTimeout: OnTimeout = .throwTimedOutWaiting) async throws {
+    public func enable() throws {
         if disposed {
-            throw LockError.disposed(name: name)
+            throw LockError.disabled
+        }
+        
+        disposed = false
+    }
+    
+    
+    public func waitAll(timeout: TimeInterval? = nil, onTimeout: OnTimeout = .throwTimedOut) async throws {
+        if disposed {
+            throw LockError.disabled
         }
         
         if isAcquired == false {
@@ -475,7 +443,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     }
     
     public func failAll(onlyWaiting: Bool = false) async throws {
-        await failAllInner(error: LockError.expresslyFailed(lock: self, methodName: .failAll), onlyWaiting: onlyWaiting)
+        await failAllInner(error: LockError.cancelled, onlyWaiting: onlyWaiting)
         
         // if disposed == true {
         // return
@@ -485,7 +453,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
     
     public func checkReleased() throws {
         if isAcquired {
-            throw LockError.acquiredElsewhere(lock: self, acquiredAt: debugLockIDToSourceLocation[self.acquiredLockID!])
+            throw LockError.isAcquired
         }
         
         assert(continuationsAndLockIDsFIFO.isEmpty)
@@ -501,10 +469,7 @@ public actor AsyncAwaitLock: CustomStringConvertible {
             lockItem.timeoutTask?.cancel()
             
             lockItem.continuation.resume(
-                throwing: LockError.taskCancelled(
-                    lock: self,
-                    error: CancellationError()
-                )
+                throwing: LockError.cancelled
             )
         }
     }

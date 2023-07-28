@@ -227,10 +227,6 @@ public actor AsyncAwaitLock: CustomStringConvertible {
                             sleepTask = nil
                         }
                         else {
-                            // When running under macCatalyst on x86_64 (didn't try ARM)
-                            // "try await Task.sleep()" (running inside let sleepTask: Task{}) is cancelled when a StoreKit2 .purchase() dialog is shown (or the success dialog, one of them).
-                            // The StoreKit2 modal alerts are not parented by the app, however the app is suspended while they are shown.
-                            // This cancellation triggered by .purchase() system modal dialogs does not happen in the iOS simulator, Swift Playgrounds or on iOS devices.
                             sleepTask = Task { [self] in
                                 do {
                                     try await Task.sleep(nanoseconds: UInt64(1_000_000_000 * timeout!))
